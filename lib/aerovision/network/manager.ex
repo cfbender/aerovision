@@ -207,10 +207,9 @@ defmodule AeroVision.Network.Manager do
     {:noreply, %{state | mode: :ap, reconnect_timer: nil}}
   end
 
-  # Ignore any other messages
+  # Ignore any other messages (e.g. PubSub broadcasts we subscribe to but don't handle)
   @impl true
-  def handle_info(msg, state) do
-    Logger.debug("[Network.Manager] Unhandled message: #{inspect(msg)}")
+  def handle_info(_msg, state) do
     {:noreply, state}
   end
 

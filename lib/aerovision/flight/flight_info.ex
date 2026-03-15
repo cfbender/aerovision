@@ -2,17 +2,30 @@ defmodule AeroVision.Flight.FlightInfo do
   @moduledoc "Enriched flight information from FlightAware AeroAPI."
 
   defstruct [
-    :ident,              # String - flight identifier (e.g., "AAL1234")
-    :operator,           # String - operator ICAO code (e.g., "AAL")
-    :airline_name,       # String - human-friendly airline name
-    :aircraft_type,      # String - ICAO aircraft type code (e.g., "B738")
-    :aircraft_name,      # String - human-friendly aircraft name (e.g., "Boeing 737-800")
-    :origin,             # %Airport{}
-    :destination,        # %Airport{}
-    :departure_time,     # DateTime | nil
-    :arrival_time,       # DateTime | nil
-    :progress_pct,       # float 0.0-1.0 | nil
-    :cached_at           # DateTime - when this was cached
+    # String - flight identifier (e.g., "AAL1234")
+    :ident,
+    # String - operator ICAO code (e.g., "AAL")
+    :operator,
+    # String - human-friendly airline name
+    :airline_name,
+    # String - ICAO aircraft type code (e.g., "B738")
+    :aircraft_type,
+    # String - human-friendly aircraft name (e.g., "Boeing 737-800")
+    :aircraft_name,
+    # %Airport{}
+    :origin,
+    # %Airport{}
+    :destination,
+    # DateTime | nil - scheduled departure (scheduled_out)
+    :departure_time,
+    # DateTime | nil - actual departure (actual_out), preferred for progress
+    :actual_departure_time,
+    # DateTime | nil - scheduled arrival (scheduled_in)
+    :arrival_time,
+    # float 0.0-1.0 | nil
+    :progress_pct,
+    # DateTime - when this was cached
+    :cached_at
   ]
 
   @type t :: %__MODULE__{}
@@ -22,10 +35,14 @@ defmodule AeroVision.Flight.Airport do
   @moduledoc "Airport information."
 
   defstruct [
-    :icao,    # String - ICAO code (e.g., "KRDU")
-    :iata,    # String - IATA code (e.g., "RDU")
-    :name,    # String - airport name
-    :city     # String - city name
+    # String - ICAO code (e.g., "KRDU")
+    :icao,
+    # String - IATA code (e.g., "RDU")
+    :iata,
+    # String - airport name
+    :name,
+    # String - city name
+    :city
   ]
 
   @type t :: %__MODULE__{}

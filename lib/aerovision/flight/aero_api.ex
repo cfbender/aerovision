@@ -4,13 +4,17 @@ defmodule AeroVision.Flight.AeroAPI do
 
   Fetches enriched flight data (origin/destination airports, aircraft type,
   airline name, departure/arrival times) for a given callsign and caches
-  results in ETS for 1 hour.
+  results in ETS for 24 hours.
 
   Incoming enrichment requests are queued and processed at a max rate of
   1 request per second to respect AeroAPI rate limits.
 
   Broadcasts `{:flight_enriched, callsign, %FlightInfo{}}` on PubSub topic
   "flights" when enrichment completes.
+
+  Cache entries are persisted to CubDB so they survive reboots. Monthly API
+  call counts are also tracked in CubDB to help stay within the free tier
+  (~1,000 calls/month at $0.005 each).
   """
 
   use GenServer
@@ -24,8 +28,9 @@ defmodule AeroVision.Flight.AeroAPI do
   @topic "flights"
 
   @cache_table :aerovision_aeroapi_cache
-  @cache_ttl_sec 3600
+  @cache_ttl_sec 86_400
   @rate_limit_ms 1_000
+  @persist_table :aerovision_aeroapi_persist
 
   # ─────────────────────────────────────────────────────────── public API ──
 
@@ -40,6 +45,11 @@ defmodule AeroVision.Flight.AeroAPI do
   def enrich(callsign) when is_binary(callsign) do
     GenServer.cast(__MODULE__, {:enrich, callsign})
     :ok
+  end
+
+  @doc "Returns the number of AeroAPI calls made this calendar month."
+  def monthly_usage do
+    GenServer.call(__MODULE__, :monthly_usage)
   end
 
   @doc "Synchronously look up a cached %FlightInfo{} by callsign, or nil."
@@ -61,14 +71,57 @@ defmodule AeroVision.Flight.AeroAPI do
   def init(_opts) do
     :ets.new(@cache_table, [:named_table, :public, :set, read_concurrency: true])
 
+    data_dir =
+      if Application.get_env(:aerovision, :target, :host) == :host do
+        Path.join(System.user_home!(), ".aerovision/aeroapi_cache")
+      else
+        "/data/aerovision/aeroapi_cache"
+      end
+
+    File.mkdir_p!(data_dir)
+
+    db =
+      case CubDB.start_link(data_dir: data_dir, name: @persist_table) do
+        {:ok, pid} -> pid
+        {:error, {:already_started, pid}} -> pid
+      end
+
+    # Load valid cache entries into ETS and purge expired ones from CubDB
+    now = System.system_time(:second)
+
+    CubDB.select(db)
+    |> Enum.each(fn
+      {key, {flight_info, cached_at}} when is_binary(key) ->
+        if now - cached_at < @cache_ttl_sec do
+          :ets.insert(@cache_table, {key, flight_info, cached_at})
+        else
+          CubDB.delete(db, key)
+        end
+
+      _ ->
+        :ok
+    end)
+
+    # Read monthly call count
+    month_key = month_key()
+    call_count = CubDB.get(db, {:calls, month_key}, 0)
+
     state = %{
       queue: MapSet.new(),
-      processing: false,
-      timer: nil
+      timer: nil,
+      db: db,
+      call_count: call_count,
+      month_key: month_key
     }
 
     timer = schedule_tick()
+    schedule_prune()
     {:ok, %{state | timer: timer}}
+  end
+
+  @impl true
+  def handle_call(:monthly_usage, _from, state) do
+    {:reply, state.call_count, state}
   end
 
   @impl true
@@ -88,6 +141,15 @@ defmodule AeroVision.Flight.AeroAPI do
     {:noreply, new_state}
   end
 
+  @impl true
+  def handle_info(:prune, state) do
+    prune_cache(state.db)
+    schedule_prune()
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
   # ────────────────────────────────────────────────────── queue processing ──
 
   defp process_next(%{queue: queue} = state) do
@@ -97,21 +159,21 @@ defmodule AeroVision.Flight.AeroAPI do
 
       callsign ->
         remaining = MapSet.delete(queue, callsign)
+        state = %{state | queue: remaining}
 
-        # Check cache again (may have been enriched while queued)
         if get_cached(callsign) do
-          process_next(%{state | queue: remaining})
+          process_next(state)
         else
-          do_fetch(callsign)
-          %{state | queue: remaining}
+          do_fetch(callsign, state)
         end
     end
   end
 
-  defp do_fetch(callsign) do
+  defp do_fetch(callsign, state) do
     case api_key() do
       nil ->
         Logger.warning("[AeroAPI] No API key configured, skipping enrichment for #{callsign}")
+        state
 
       key ->
         base_url = aeroapi_config(:base_url)
@@ -122,7 +184,7 @@ defmodule AeroVision.Flight.AeroAPI do
           {:ok, %{status: 200, body: body}} ->
             case parse_flight(body) do
               {:ok, flight_info} ->
-                cache_put(callsign, flight_info)
+                new_state = cache_put(callsign, flight_info, state)
 
                 Phoenix.PubSub.broadcast(
                   @pubsub,
@@ -132,21 +194,41 @@ defmodule AeroVision.Flight.AeroAPI do
 
                 Logger.debug("[AeroAPI] Enriched #{callsign}")
 
+                # Increment monthly counter
+                new_count = new_state.call_count + 1
+                CubDB.put(new_state.db, {:calls, new_state.month_key}, new_count)
+                Phoenix.PubSub.broadcast(@pubsub, "config", {:aeroapi_usage, new_count})
+
+                # Reset counter if month rolled over
+                current_month = month_key()
+
+                if current_month != new_state.month_key do
+                  CubDB.put(new_state.db, {:calls, current_month}, 1)
+                  %{new_state | call_count: 1, month_key: current_month}
+                else
+                  %{new_state | call_count: new_count}
+                end
+
               :error ->
                 Logger.debug("[AeroAPI] No usable flight data for #{callsign}")
+                state
             end
 
           {:ok, %{status: 404}} ->
             Logger.debug("[AeroAPI] Flight not found: #{callsign}")
+            state
 
           {:ok, %{status: 429}} ->
             Logger.warning("[AeroAPI] Rate limited (429) for #{callsign}")
+            state
 
           {:ok, %{status: status}} ->
             Logger.warning("[AeroAPI] Unexpected status #{status} for #{callsign}")
+            state
 
           {:error, reason} ->
             Logger.warning("[AeroAPI] HTTP error for #{callsign}: #{inspect(reason)}")
+            state
         end
     end
   end
@@ -162,6 +244,7 @@ defmodule AeroVision.Flight.AeroAPI do
       origin: parse_airport(Map.get(flight, "origin")),
       destination: parse_airport(Map.get(flight, "destination")),
       departure_time: parse_time(Map.get(flight, "scheduled_out")),
+      actual_departure_time: parse_time(Map.get(flight, "actual_out")),
       arrival_time: parse_time(Map.get(flight, "scheduled_in")),
       cached_at: DateTime.utc_now()
     }
@@ -193,15 +276,73 @@ defmodule AeroVision.Flight.AeroAPI do
 
   # ───────────────────────────────────────────────────────────── ETS cache ──
 
-  defp cache_put(callsign, flight_info) do
+  defp cache_put(callsign, flight_info, state) do
     now = System.system_time(:second)
     :ets.insert(@cache_table, {callsign, flight_info, now})
+    CubDB.put(state.db, callsign, {flight_info, now})
+    state
   end
 
   # ──────────────────────────────────────────────────────────── scheduling ──
 
   defp schedule_tick do
     Process.send_after(self(), :tick, @rate_limit_ms)
+  end
+
+  # Run once every 24 hours
+  @prune_interval_ms 24 * 60 * 60 * 1_000
+
+  defp schedule_prune do
+    Process.send_after(self(), :prune, @prune_interval_ms)
+  end
+
+  defp prune_cache(db) do
+    now = System.system_time(:second)
+
+    # Delete callsign entries whose 24h TTL has expired
+    expired_keys =
+      CubDB.select(db)
+      |> Stream.filter(fn
+        {key, {_info, cached_at}} when is_binary(key) -> now - cached_at >= @cache_ttl_sec
+        _ -> false
+      end)
+      |> Enum.map(fn {key, _} -> key end)
+
+    # Delete call-counter entries older than 2 months
+    current = Date.utc_today()
+    cutoff = Date.add(current, -60)
+
+    old_month_keys =
+      CubDB.select(db)
+      |> Stream.filter(fn
+        {{:calls, month_str}, _} ->
+          case Date.from_iso8601("#{month_str}-01") do
+            {:ok, d} -> Date.before?(d, cutoff)
+            _ -> false
+          end
+
+        _ ->
+          false
+      end)
+      |> Enum.map(fn {key, _} -> key end)
+
+    all_keys = expired_keys ++ old_month_keys
+
+    if all_keys != [] do
+      CubDB.delete_multi(db, all_keys)
+      CubDB.compact(db)
+
+      Logger.debug(
+        "[AeroAPI] Pruned #{length(expired_keys)} expired entries, #{length(old_month_keys)} old month counters"
+      )
+    end
+  end
+
+  # ─────────────────────────────────────────────────────── month helpers ──
+
+  defp month_key do
+    date = Date.utc_today()
+    "#{date.year}-#{String.pad_leading(to_string(date.month), 2, "0")}"
   end
 
   # ────────────────────────────────────────────────────────────── config ──

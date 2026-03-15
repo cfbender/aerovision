@@ -26,6 +26,7 @@ defmodule AeroVision.Flight.Tracker do
 
   @cleanup_interval_ms 30_000
   @stale_threshold_sec 120
+  @cache_key :last_flights
 
   # ─────────────────────────────────────────────────────────── public API ──
 
@@ -43,6 +44,11 @@ defmodule AeroVision.Flight.Tracker do
     GenServer.call(__MODULE__, {:get_flight, callsign})
   end
 
+  @doc "Trigger an immediate broadcast of the current flight state."
+  def broadcast_now do
+    GenServer.cast(__MODULE__, :broadcast_now)
+  end
+
   # ───────────────────────────────────────────────────────────── callbacks ──
 
   @impl true
@@ -50,8 +56,38 @@ defmodule AeroVision.Flight.Tracker do
     Phoenix.PubSub.subscribe(@pubsub, @flights_topic)
     Phoenix.PubSub.subscribe(@pubsub, @config_topic)
 
+    data_dir =
+      if Application.get_env(:aerovision, :target, :host) == :host do
+        Path.join(System.user_home!(), ".aerovision/tracker_cache")
+      else
+        "/data/aerovision/tracker_cache"
+      end
+
+    File.mkdir_p!(data_dir)
+
+    db =
+      case CubDB.start_link(
+             data_dir: data_dir,
+             name: :aerovision_tracker_cache,
+             # Compact aggressively — we write one key repeatedly every 15s,
+             # so the append-only file accumulates dirt quickly.
+             auto_compact: {10, 0.3}
+           ) do
+        {:ok, pid} -> pid
+        {:error, {:already_started, pid}} -> pid
+      end
+
+    # Restore last known flights from cache
+    cached_flights = CubDB.get(db, @cache_key, %{})
+    flight_count = map_size(cached_flights)
+
+    if flight_count > 0 do
+      Logger.info("[Tracker] Restored #{flight_count} flight(s) from cache")
+    end
+
     state = %{
-      flights: %{},
+      flights: cached_flights,
+      db: db,
       mode: Store.get(:display_mode),
       tracked_flights: Store.get(:tracked_flights),
       airline_filters: Store.get(:airline_filters),
@@ -59,7 +95,15 @@ defmodule AeroVision.Flight.Tracker do
     }
 
     cleanup_timer = schedule_cleanup()
-    {:ok, %{state | cleanup_timer: cleanup_timer}}
+    {:ok, %{state | cleanup_timer: cleanup_timer}, {:continue, :broadcast_initial}}
+  end
+
+  @impl true
+  def handle_continue(:broadcast_initial, state) do
+    # Broadcast cached flights immediately so any already-connected LiveViews
+    # receive current state without waiting for the first OpenSky poll
+    broadcast_display(state)
+    {:noreply, state}
   end
 
   # ───────────────────────────────────────────────────── call handlers ──
@@ -72,6 +116,14 @@ defmodule AeroVision.Flight.Tracker do
   @impl true
   def handle_call({:get_flight, callsign}, _from, state) do
     {:reply, Map.get(state.flights, callsign), state}
+  end
+
+  # ─────────────────────────────────────────────────────── cast handlers ──
+
+  @impl true
+  def handle_cast(:broadcast_now, state) do
+    broadcast_display(state)
+    {:noreply, state}
   end
 
   # ──────────────────────────────────────────────────────── info handlers ──
@@ -89,8 +141,10 @@ defmodule AeroVision.Flight.Tracker do
           callsign ->
             case Map.get(acc, callsign) do
               nil ->
-                # New flight — create entry and request enrichment
-                AeroAPI.enrich(callsign)
+                # New flight — request enrichment only if it passes the active filter
+                if should_enrich?(callsign, state) do
+                  AeroAPI.enrich(callsign)
+                end
 
                 tracked = %TrackedFlight{
                   state_vector: sv,
@@ -110,6 +164,7 @@ defmodule AeroVision.Flight.Tracker do
       end)
 
     new_state = %{state | flights: new_flights}
+    CubDB.put(new_state.db, @cache_key, new_flights)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -127,6 +182,7 @@ defmodule AeroVision.Flight.Tracker do
         updated = %{tracked | flight_info: enriched_info}
         new_flights = Map.put(state.flights, callsign, updated)
         new_state = %{state | flights: new_flights}
+        CubDB.put(new_state.db, @cache_key, new_state.flights)
         broadcast_display(new_state)
         {:noreply, new_state}
     end
@@ -175,8 +231,34 @@ defmodule AeroVision.Flight.Tracker do
 
     cleanup_timer = schedule_cleanup()
     new_state = %{state | flights: active_flights, cleanup_timer: cleanup_timer}
+
+    if map_size(new_state.flights) != map_size(state.flights) do
+      CubDB.put(new_state.db, @cache_key, new_state.flights)
+    end
+
     {:noreply, new_state}
   end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  # ──────────────────────────────────────────────── enrichment gating ──
+
+  # Only request AeroAPI enrichment for flights that will actually be displayed.
+  # This keeps API usage proportional to what's on screen.
+
+  defp should_enrich?(callsign, %{mode: :tracked, tracked_flights: tracked_list}) do
+    Enum.any?(tracked_list, &callsign_matches?(callsign, &1))
+  end
+
+  defp should_enrich?(_callsign, %{mode: :nearby, airline_filters: []}), do: true
+
+  defp should_enrich?(callsign, %{mode: :nearby, airline_filters: filters}) do
+    Enum.any?(filters, &String.starts_with?(callsign, &1))
+  end
+
+  defp should_enrich?(_callsign, _state), do: true
 
   # ───────────────────────────────────────────────────────── filter logic ──
 
@@ -221,10 +303,34 @@ defmodule AeroVision.Flight.Tracker do
 
   # ──────────────────────────────────────────────────── progress calculation ──
 
-  # AeroAPI v4 /flights/{ident} doesn't return lat/lon for airports, so we
-  # cannot compute progress from position alone. This is a placeholder for
-  # when airport coordinates are available (e.g., from a local DB lookup).
-  defp calculate_progress(_sv, _info), do: nil
+  # Calculate flight progress (0.0–1.0) from departure and arrival times.
+  # Prefers actual_departure_time over scheduled for accuracy when the flight
+  # departed late. Falls back to nil if times are unavailable.
+  defp calculate_progress(_sv, %FlightInfo{arrival_time: nil}), do: nil
+
+  defp calculate_progress(_sv, %FlightInfo{departure_time: nil, actual_departure_time: nil}),
+    do: nil
+
+  defp calculate_progress(_sv, info) do
+    now = DateTime.utc_now()
+
+    depart = info.actual_departure_time || info.departure_time
+    arrive = info.arrival_time
+
+    dep_unix = DateTime.to_unix(depart)
+    arr_unix = DateTime.to_unix(arrive)
+    now_unix = DateTime.to_unix(now)
+
+    total = arr_unix - dep_unix
+
+    if total <= 0 do
+      nil
+    else
+      ((now_unix - dep_unix) / total)
+      |> max(0.0)
+      |> min(1.0)
+    end
+  end
 
   # ──────────────────────────────────────────────────────── broadcast helper ──
 

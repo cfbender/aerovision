@@ -10,6 +10,8 @@ defmodule AeroVisionWeb.DashboardLive do
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "display")
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
+      # Ask Tracker to re-broadcast current state so we don't wait for the next poll
+      AeroVision.Flight.Tracker.broadcast_now()
     end
 
     config = AeroVision.Config.Store.all()
@@ -588,6 +590,10 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   # ---- Private Helpers --------------------------------------------------------
+
+  @on_target Application.compile_env(:aerovision, :target, :host) != :host
+
+  defp compute_setup_step(_config) when not @on_target, do: :done
 
   defp compute_setup_step(config) do
     cond do

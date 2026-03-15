@@ -8,6 +8,7 @@ defmodule AeroVisionWeb.SettingsLive do
     if connected?(socket) do
       Store.subscribe()
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
+      Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
     end
 
     config = Store.all()
@@ -35,6 +36,14 @@ defmodule AeroVisionWeb.SettingsLive do
        opensky_client_id: config.opensky_client_id || "",
        opensky_client_secret: config.opensky_client_secret || "",
        aeroapi_key: config.aeroapi_key || "",
+       aeroapi_usage:
+         try do
+           AeroVision.Flight.AeroAPI.monthly_usage()
+         rescue
+           _ -> 0
+         catch
+           :exit, _ -> 0
+         end,
        # WiFi
        wifi_ssid: config.wifi_ssid || "",
        wifi_editing: config.wifi_ssid == nil,
@@ -66,6 +75,10 @@ defmodule AeroVisionWeb.SettingsLive do
   def handle_info(:wifi_scan_complete, socket) do
     networks = AeroVision.Network.Manager.scan_networks()
     {:noreply, assign(socket, wifi_scanning: false, wifi_scan_results: networks)}
+  end
+
+  def handle_info({:aeroapi_usage, count}, socket) do
+    {:noreply, assign(socket, aeroapi_usage: count)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -531,6 +544,37 @@ defmodule AeroVisionWeb.SettingsLive do
                 Optional — enables route and airline info enrichment.
               </p>
             </div>
+            <%!-- AeroAPI monthly usage --%>
+            <%= if @aeroapi_key != "" do %>
+              <div class="pt-2 space-y-1.5">
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-gray-500">AeroAPI calls this month</span>
+                  <span class={[
+                    "font-mono font-medium",
+                    @aeroapi_usage < 800 && "text-emerald-400",
+                    (@aeroapi_usage >= 800 and @aeroapi_usage < 950) && "text-amber-400",
+                    @aeroapi_usage >= 950 && "text-red-400"
+                  ]}>
+                    {@aeroapi_usage} / ~1,000
+                  </span>
+                </div>
+                <div class="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                  <div
+                    class={[
+                      "h-full rounded-full transition-all duration-500",
+                      @aeroapi_usage < 800 && "bg-emerald-500",
+                      (@aeroapi_usage >= 800 and @aeroapi_usage < 950) && "bg-amber-500",
+                      @aeroapi_usage >= 950 && "bg-red-500"
+                    ]}
+                    style={"width: #{min(round(@aeroapi_usage / 10), 100)}%"}
+                  >
+                  </div>
+                </div>
+                <p class="text-xs text-gray-600">
+                  Free tier: ~1,000 calls/month ($0.005 each). Cache lasts 24h per flight.
+                </p>
+              </div>
+            <% end %>
             <.save_button />
           </.form>
         </.settings_card>

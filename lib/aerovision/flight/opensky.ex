@@ -56,7 +56,9 @@ defmodule AeroVision.Flight.OpenSky do
       Logger.warning("[OpenSky] No credentials configured — polling disabled")
     end
 
-    {:noreply, schedule_poll(state)}
+    # Fetch immediately on startup, then schedule the recurring timer
+    new_state = do_fetch(state)
+    {:noreply, schedule_poll(new_state)}
   end
 
   @impl true
@@ -183,8 +185,9 @@ defmodule AeroVision.Flight.OpenSky do
   defp parse_states(_), do: []
 
   defp parse_rate_limit(headers) do
-    case List.keyfind(headers, "x-rate-limit-remaining", 0) do
-      {_, value} -> String.to_integer(value)
+    # Req returns headers as a map of %{name => [value, ...]}
+    case Map.get(headers, "x-rate-limit-remaining") do
+      [value | _] -> String.to_integer(value)
       nil -> nil
     end
   end
