@@ -235,7 +235,9 @@ defmodule AeroVision.Flight.AeroAPI do
 
   # ───────────────────────────────────────────────────────── parse helpers ──
 
-  defp parse_flight(%{"flights" => [flight | _]}) do
+  defp parse_flight(%{"flights" => flights}) when is_list(flights) and flights != [] do
+    flight = best_flight(flights)
+
     info = %FlightInfo{
       ident: Map.get(flight, "ident"),
       operator: Map.get(flight, "operator"),
@@ -253,6 +255,44 @@ defmodule AeroVision.Flight.AeroAPI do
   end
 
   defp parse_flight(_), do: :error
+
+  # Pick the best flight occurrence from AeroAPI's list:
+  # 1. Currently airborne: actual_out set (departed) and actual_in not set (not landed)
+  # 2. Most recently departed: largest actual_out before now
+  # 3. Soonest scheduled: smallest scheduled_out closest to now
+  defp best_flight(flights) do
+    now_unix = System.system_time(:second)
+
+    airborne =
+      Enum.filter(flights, fn f ->
+        Map.get(f, "actual_out") != nil and Map.get(f, "actual_in") == nil
+      end)
+
+    if airborne != [] do
+      # Among airborne, pick the one that departed most recently
+      Enum.max_by(airborne, fn f ->
+        case parse_unix(Map.get(f, "actual_out")) do
+          nil -> 0
+          t -> t
+        end
+      end)
+    else
+      # No airborne flight — pick the one with scheduled_out closest to now
+      Enum.min_by(flights, fn f ->
+        dep = parse_unix(Map.get(f, "scheduled_out")) || parse_unix(Map.get(f, "actual_out"))
+        if dep, do: abs(dep - now_unix), else: :infinity
+      end)
+    end
+  end
+
+  defp parse_unix(nil), do: nil
+
+  defp parse_unix(str) when is_binary(str) do
+    case DateTime.from_iso8601(str) do
+      {:ok, dt, _} -> DateTime.to_unix(dt)
+      _ -> nil
+    end
+  end
 
   defp parse_airport(nil), do: nil
 

@@ -189,8 +189,21 @@ defmodule AeroVision.Flight.Tracker do
   end
 
   @impl true
+  def handle_info({:config_changed, key, _value}, state)
+      when key in [:location_lat, :location_lon, :radius_km] do
+    # Location changed — clear all flights immediately. Old location's planes
+    # are irrelevant. The next OpenSky broadcast will repopulate with fresh data.
+    Logger.info("[Tracker] Location changed, clearing flight state")
+    new_state = %{state | flights: %{}}
+    CubDB.put(new_state.db, @cache_key, %{})
+    broadcast_display(new_state)
+    {:noreply, new_state}
+  end
+
+  @impl true
   def handle_info({:config_changed, :display_mode, value}, state) do
     new_state = %{state | mode: value}
+    request_missing_enrichment(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -198,6 +211,7 @@ defmodule AeroVision.Flight.Tracker do
   @impl true
   def handle_info({:config_changed, :tracked_flights, value}, state) do
     new_state = %{state | tracked_flights: value}
+    request_missing_enrichment(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -205,6 +219,7 @@ defmodule AeroVision.Flight.Tracker do
   @impl true
   def handle_info({:config_changed, :airline_filters, value}, state) do
     new_state = %{state | airline_filters: value}
+    request_missing_enrichment(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -247,6 +262,20 @@ defmodule AeroVision.Flight.Tracker do
 
   # Only request AeroAPI enrichment for flights that will actually be displayed.
   # This keeps API usage proportional to what's on screen.
+
+  # For each flight currently in state that passes the active filter but has no
+  # enrichment, request AeroAPI enrichment. Called after filter config changes.
+  defp request_missing_enrichment(state) do
+    state.flights
+    |> Map.values()
+    |> Enum.each(fn tracked ->
+      callsign = tracked.state_vector.callsign
+
+      if callsign && is_nil(tracked.flight_info) && should_enrich?(callsign, state) do
+        AeroAPI.enrich(callsign)
+      end
+    end)
+  end
 
   defp should_enrich?(callsign, %{mode: :tracked, tracked_flights: tracked_list}) do
     Enum.any?(tracked_list, &callsign_matches?(callsign, &1))
@@ -323,12 +352,17 @@ defmodule AeroVision.Flight.Tracker do
 
     total = arr_unix - dep_unix
 
-    if total <= 0 do
-      nil
-    else
-      ((now_unix - dep_unix) / total)
-      |> max(0.0)
-      |> min(1.0)
+    cond do
+      # Flight hasn't departed yet according to schedule — return nil so we
+      # show no progress bar rather than a misleading 0%
+      total <= 0 ->
+        nil
+
+      now_unix < dep_unix ->
+        nil
+
+      true ->
+        min((now_unix - dep_unix) / total, 1.0)
     end
   end
 

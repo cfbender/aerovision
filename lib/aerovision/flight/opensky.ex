@@ -50,6 +50,8 @@ defmodule AeroVision.Flight.OpenSky do
 
   @impl true
   def handle_continue(:start_polling, state) do
+    Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
+
     if credentials_configured?() do
       Logger.info("[OpenSky] Starting poller")
     else
@@ -70,6 +72,24 @@ defmodule AeroVision.Flight.OpenSky do
   def handle_info(:poll, state) do
     new_state = do_fetch(state)
     {:noreply, schedule_poll(new_state)}
+  end
+
+  # When location changes, trigger an immediate re-poll with the new bounding box.
+  # The new bounding_box() is read from Store on every fetch, so no state update needed.
+  @impl true
+  def handle_info({:config_changed, key, _value}, state)
+      when key in [:location_lat, :location_lon, :radius_km] do
+    Logger.info("[OpenSky] Location changed, triggering immediate re-poll")
+    new_state = do_fetch(state)
+    {:noreply, schedule_poll(new_state)}
+  end
+
+  def handle_info({:config_changed, _key, _value}, state) do
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
   end
 
   # ─────────────────────────────────────────────────────────── fetch logic ──
