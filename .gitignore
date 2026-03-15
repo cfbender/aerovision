@@ -1,0 +1,32 @@
+# Elixir
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+aerovision-*.tar
+/tmp/
+
+# Nerves
+/.nerves/
+/rootfs_overlay/tmp/
+
+# Phoenix
+/priv/static/assets/
+
+# Node
+/assets/node_modules/
+
+# Go
+/go_src/led_driver/led_driver
+/priv/led_driver
+
+# Editor
+.elixir_ls/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store

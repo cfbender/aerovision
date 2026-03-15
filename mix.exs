@@ -1,0 +1,117 @@
+defmodule AeroVision.MixProject do
+  use Mix.Project
+
+  @app :aerovision
+  @version "0.1.0"
+  @all_targets [:rpi0_2]
+
+  def project do
+    [
+      app: @app,
+      version: @version,
+      elixir: "~> 1.17",
+      archives: [nerves_bootstrap: "~> 1.13"],
+      start_permanent: Mix.env() == :prod,
+      deps: deps(),
+      releases: [{@app, release()}],
+      aliases: aliases(),
+      compilers: [:phoenix_live_view] ++ Mix.compilers(),
+      listeners: [Phoenix.CodeReloader]
+    ]
+  end
+
+  def cli do
+    [preferred_targets: [run: :host, test: :host]]
+  end
+
+  def application do
+    [
+      mod: {AeroVision.Application, []},
+      extra_applications: [:logger, :runtime_tools, :crypto]
+    ]
+  end
+
+  defp deps do
+    [
+      # Nerves core
+      {:nerves, "~> 1.10", runtime: false},
+      {:shoehorn, "~> 0.9", targets: @all_targets},
+      {:ring_logger, "~> 0.11", targets: @all_targets},
+      {:toolshed, "~> 0.4", targets: @all_targets},
+      {:nerves_runtime, "~> 0.13", targets: @all_targets},
+      {:nerves_pack, "~> 0.7", targets: @all_targets},
+
+      # Nerves system — only built for the rpi0_2 target
+      {:nerves_system_rpi0_2, "~> 1.24", runtime: false, targets: :rpi0_2},
+
+      # Phoenix web stack
+      {:phoenix, "~> 1.8.5"},
+      {:phoenix_html, "~> 4.1"},
+      {:phoenix_live_reload, "~> 1.2", only: :dev},
+      {:phoenix_live_view, "~> 1.1.0"},
+      {:lazy_html, ">= 0.1.0", only: :test},
+      {:bandit, "~> 1.5"},
+
+      # Data / storage
+      {:jason, "~> 1.4"},
+      {:cubdb, "~> 2.0"},
+
+      # HTTP client
+      {:req, "~> 0.5"},
+
+      # Hardware
+      {:circuits_gpio, "~> 2.0", targets: @all_targets},
+      {:muontrap, "~> 1.0"},
+
+      # Assets
+      {:esbuild, "~> 0.10", runtime: false},
+      {:tailwind, "~> 0.3", runtime: false},
+      {:heroicons,
+       github: "tailwindlabs/heroicons",
+       tag: "v2.1.1",
+       sparse: "optimized",
+       app: false,
+       compile: false,
+       depth: 1},
+
+      # Utilities
+      {:floki, "~> 0.36"},
+      {:dns_cluster, "~> 0.1"},
+      {:telemetry_metrics, "~> 1.0"},
+      {:telemetry_poller, "~> 1.0"}
+    ]
+  end
+
+  defp release do
+    [
+      overwrite: true,
+      # Nerves-specific release settings
+      cookie: "#{@app}_cookie",
+      include_erts: &Nerves.Release.erts/0,
+      steps: [&Nerves.Release.init/1, :assemble],
+      strip_beams: Mix.env() == :prod
+    ]
+  end
+
+  defp aliases do
+    [
+      loadconfig: [&bootstrap/1],
+      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
+      "assets.build": ["compile", "tailwind aerovision", "esbuild aerovision"],
+      "assets.deploy": [
+        "tailwind aerovision --minify",
+        "esbuild aerovision --minify",
+        "phx.digest"
+      ],
+      "firmware.burn": ["firmware", "nerves.firmware.burn"],
+      "firmware.upload": ["firmware", "nerves.firmware.ssh"]
+    ]
+  end
+
+  # Nerves requires loading the config before deps are available, so we call the
+  # bootstrap archive function which sets up the Nerves target environment.
+  defp bootstrap(args) do
+    Application.start(:nerves_bootstrap)
+    Mix.Task.run("loadconfig", args)
+  end
+end
