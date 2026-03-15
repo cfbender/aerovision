@@ -9,20 +9,26 @@ defmodule AeroVisionWeb.DashboardLive do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "display")
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
+      Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
     end
 
+    config = AeroVision.Config.Store.all()
     flights = Tracker.get_flights()
-    mode = AeroVision.Config.Store.get(:display_mode)
     network_mode = AeroVision.Network.Manager.current_mode()
     ip = AeroVision.Network.Manager.current_ip()
 
+    setup_step = compute_setup_step(config)
+
     {:ok,
      assign(socket,
-       page_title: "Dashboard",
+       page_title: if(setup_step != :done, do: "Setup", else: "Dashboard"),
        flights: flights,
-       mode: mode,
+       mode: config.display_mode,
        network_mode: network_mode,
-       ip: ip
+       ip: ip,
+       # Setup wizard
+       setup_step: setup_step,
+       setup_complete: setup_step == :done
      )}
   end
 
@@ -39,61 +45,383 @@ defmodule AeroVisionWeb.DashboardLive do
     {:noreply, assign(socket, network_mode: :ap, ip: "192.168.24.1")}
   end
 
+  def handle_info({:config_changed, _key, _value}, socket) do
+    config = AeroVision.Config.Store.all()
+    setup_step = compute_setup_step(config)
+    {:noreply, assign(socket, setup_step: setup_step, setup_complete: setup_step == :done)}
+  end
+
   def handle_info(_, socket), do: {:noreply, socket}
+
+  # ---- Setup Wizard -----------------------------------------------------------
+
+  @impl true
+  def handle_event("setup_wifi", %{"wifi" => params}, socket) do
+    ssid = String.trim(params["ssid"] || "")
+    password = params["password"] || ""
+
+    if ssid != "" do
+      AeroVision.Config.Store.put(:wifi_ssid, ssid)
+      AeroVision.Config.Store.put(:wifi_password, password)
+      AeroVision.Network.Manager.connect_wifi(ssid, password)
+
+      config = AeroVision.Config.Store.all()
+      {:noreply, assign(socket, setup_step: compute_setup_step(config))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("setup_api_keys", %{"api_keys" => params}, socket) do
+    client_id = String.trim(params["opensky_client_id"] || "")
+    client_secret = String.trim(params["opensky_client_secret"] || "")
+    aeroapi_key = String.trim(params["aeroapi_key"] || "")
+
+    if client_id != "" do
+      AeroVision.Config.Store.put(:opensky_client_id, client_id)
+      AeroVision.Config.Store.put(:opensky_client_secret, client_secret)
+      AeroVision.Config.Store.put(:aeroapi_key, aeroapi_key)
+    end
+
+    config = AeroVision.Config.Store.all()
+    {:noreply, assign(socket, setup_step: compute_setup_step(config))}
+  end
+
+  def handle_event("setup_location", %{"location" => params}, socket) do
+    lat = parse_float(params["lat"])
+    lon = parse_float(params["lon"])
+    radius = parse_float(params["radius_km"])
+
+    if lat && lon && radius do
+      AeroVision.Config.Store.put(:location_lat, lat)
+      AeroVision.Config.Store.put(:location_lon, lon)
+      AeroVision.Config.Store.put(:radius_km, radius)
+    end
+
+    config = AeroVision.Config.Store.all()
+    next_step = compute_setup_step(config)
+    {:noreply, assign(socket, setup_step: next_step, setup_complete: next_step == :done)}
+  end
+
+  def handle_event("skip_setup", _params, socket) do
+    {:noreply, assign(socket, setup_step: :done, setup_complete: true)}
+  end
+
+  def handle_event("skip_step", _params, socket) do
+    next_step =
+      case socket.assigns.setup_step do
+        :wifi -> :api_keys
+        :api_keys -> :location
+        :location -> :done
+        _ -> :done
+      end
+
+    {:noreply, assign(socket, setup_step: next_step, setup_complete: next_step == :done)}
+  end
+
+  # ---- Render -----------------------------------------------------------------
 
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
-      <div class="space-y-6">
-        <!-- Status Bar -->
-        <div class="flex items-center justify-between flex-wrap gap-3">
-          <div class="flex items-center gap-3">
-            <h1 class="text-2xl font-bold text-white">Flight Dashboard</h1>
-            <span class={[
-              "px-2 py-1 text-xs font-medium rounded-full",
-              @network_mode == :infrastructure && "bg-emerald-900 text-emerald-300",
-              @network_mode == :ap && "bg-amber-900 text-amber-300",
-              @network_mode not in [:infrastructure, :ap] && "bg-gray-700 text-gray-300"
-            ]}>
-              <%= case @network_mode do %>
-                <% :infrastructure -> %>
-                  Online
-                <% :ap -> %>
-                  Setup Mode
-                <% _ -> %>
-                  Connecting...
-              <% end %>
-            </span>
-          </div>
-          <div class="text-sm text-gray-500 flex items-center gap-2">
-            <span class="font-mono">{@ip}</span>
-            <span>·</span>
-            <span>Mode: <span class="text-cyan-400 font-medium">{@mode}</span></span>
-            <span>·</span>
-            <span class="text-gray-400">{length(@flights)} flights</span>
-          </div>
-        </div>
-
-        <%!-- Flight Cards --%>
-        <%= if @flights == [] do %>
-          <div class="text-center py-20">
-            <div class="text-6xl mb-4">✈️</div>
-            <p class="text-xl text-gray-400">Scanning for flights...</p>
-            <p class="text-sm text-gray-600 mt-2">
-              Configure your location in
-              <.link navigate={~p"/settings"} class="text-cyan-400 hover:underline">Settings</.link>
-            </p>
-          </div>
-        <% else %>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <%= for flight <- @flights do %>
-              <.flight_card flight={flight} />
-            <% end %>
-          </div>
-        <% end %>
-      </div>
+      <%= if @setup_complete do %>
+        <.flight_dashboard {assigns} />
+      <% else %>
+        <.setup_wizard {assigns} />
+      <% end %>
     </Layouts.app>
+    """
+  end
+
+  defp flight_dashboard(assigns) do
+    ~H"""
+    <div class="space-y-6">
+      <%!-- Status Bar --%>
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div class="flex items-center gap-3">
+          <h1 class="text-2xl font-bold text-white">Flight Dashboard</h1>
+          <span class={[
+            "px-2 py-1 text-xs font-medium rounded-full",
+            @network_mode == :infrastructure && "bg-emerald-900 text-emerald-300",
+            @network_mode == :ap && "bg-amber-900 text-amber-300",
+            @network_mode not in [:infrastructure, :ap] && "bg-gray-700 text-gray-300"
+          ]}>
+            <%= case @network_mode do %>
+              <% :infrastructure -> %>
+                Online
+              <% :ap -> %>
+                Setup Mode
+              <% _ -> %>
+                Connecting...
+            <% end %>
+          </span>
+        </div>
+        <div class="text-sm text-gray-500 flex items-center gap-2">
+          <span class="font-mono">{@ip}</span>
+          <span>·</span>
+          <span>Mode: <span class="text-cyan-400 font-medium">{@mode}</span></span>
+          <span>·</span>
+          <span class="text-gray-400">{length(@flights)} flights</span>
+        </div>
+      </div>
+
+      <%!-- Flight Cards --%>
+      <%= if @flights == [] do %>
+        <div class="text-center py-20">
+          <div class="text-6xl mb-4">✈️</div>
+          <p class="text-xl text-gray-400">Scanning for flights...</p>
+          <p class="text-sm text-gray-600 mt-2">
+            Configure your location in
+            <.link navigate={~p"/settings"} class="text-cyan-400 hover:underline">Settings</.link>
+          </p>
+        </div>
+      <% else %>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <%= for flight <- @flights do %>
+            <.flight_card flight={flight} />
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  defp setup_wizard(assigns) do
+    ~H"""
+    <div class="max-w-lg mx-auto space-y-8 pb-12">
+      <%!-- Header --%>
+      <div class="text-center space-y-2 pt-4">
+        <div class="text-5xl">✈️</div>
+        <h1 class="text-2xl font-bold text-white">Welcome to AeroVision</h1>
+        <p class="text-sm text-gray-400">Let's get your flight tracker set up.</p>
+      </div>
+
+      <%!-- Step indicator --%>
+      <div class="flex items-center justify-center gap-2">
+        <.step_dot step={:wifi} current={@setup_step} label="WiFi" />
+        <div class="w-8 h-px bg-gray-700" />
+        <.step_dot step={:api_keys} current={@setup_step} label="API Keys" />
+        <div class="w-8 h-px bg-gray-700" />
+        <.step_dot step={:location} current={@setup_step} label="Location" />
+      </div>
+
+      <%!-- Step content --%>
+      <%= case @setup_step do %>
+        <% :wifi -> %>
+          <div class="bg-gray-900 rounded-lg border border-gray-800 p-6 space-y-4">
+            <div class="flex items-center gap-3 mb-2">
+              <span class="text-2xl">📶</span>
+              <div>
+                <h2 class="text-lg font-semibold text-white">Connect to WiFi</h2>
+                <p class="text-xs text-gray-500">Required for fetching flight data.</p>
+              </div>
+            </div>
+            <.form for={%{}} as={:wifi} phx-submit="setup_wifi" class="space-y-3">
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  Network Name (SSID)
+                </label>
+                <input
+                  type="text"
+                  name="wifi[ssid]"
+                  value=""
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="MyHomeNetwork"
+                  autocomplete="off"
+                />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">Password</label>
+                <input
+                  type="password"
+                  name="wifi[password]"
+                  value=""
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="••••••••"
+                  autocomplete="new-password"
+                />
+              </div>
+              <button
+                type="submit"
+                class="w-full px-4 py-2.5 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-semibold rounded-md transition-colors"
+              >
+                Connect
+              </button>
+            </.form>
+            <button
+              phx-click="skip_step"
+              class="w-full text-center text-xs text-gray-600 hover:text-gray-400 transition-colors py-1"
+            >
+              Skip for now →
+            </button>
+          </div>
+        <% :api_keys -> %>
+          <div class="bg-gray-900 rounded-lg border border-gray-800 p-6 space-y-4">
+            <div class="flex items-center gap-3 mb-2">
+              <span class="text-2xl">🔑</span>
+              <div>
+                <h2 class="text-lg font-semibold text-white">API Keys</h2>
+                <p class="text-xs text-gray-500">Connect to flight data providers.</p>
+              </div>
+            </div>
+            <.form for={%{}} as={:api_keys} phx-submit="setup_api_keys" class="space-y-3">
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  OpenSky Client ID
+                </label>
+                <input
+                  type="text"
+                  name="api_keys[opensky_client_id]"
+                  value=""
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="your-client-id"
+                  autocomplete="off"
+                />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  OpenSky Client Secret
+                </label>
+                <input
+                  type="password"
+                  name="api_keys[opensky_client_secret]"
+                  value=""
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="••••••••"
+                  autocomplete="new-password"
+                />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  FlightAware AeroAPI Key
+                </label>
+                <input
+                  type="password"
+                  name="api_keys[aeroapi_key]"
+                  value=""
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="••••••••"
+                  autocomplete="new-password"
+                />
+                <p class="text-xs text-gray-600">Optional — enables airline and route enrichment.</p>
+              </div>
+              <button
+                type="submit"
+                class="w-full px-4 py-2.5 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-semibold rounded-md transition-colors"
+              >
+                Save & Continue
+              </button>
+            </.form>
+            <button
+              phx-click="skip_step"
+              class="w-full text-center text-xs text-gray-600 hover:text-gray-400 transition-colors py-1"
+            >
+              Skip for now →
+            </button>
+          </div>
+        <% :location -> %>
+          <div class="bg-gray-900 rounded-lg border border-gray-800 p-6 space-y-4">
+            <div class="flex items-center gap-3 mb-2">
+              <span class="text-2xl">📍</span>
+              <div>
+                <h2 class="text-lg font-semibold text-white">Set Your Location</h2>
+                <p class="text-xs text-gray-500">Where should we look for flights?</p>
+              </div>
+            </div>
+            <.form for={%{}} as={:location} phx-submit="setup_location" class="space-y-3">
+              <div class="grid grid-cols-2 gap-3">
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">Latitude</label>
+                  <input
+                    type="number"
+                    name="location[lat]"
+                    value=""
+                    step="0.0001"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="35.7796"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">Longitude</label>
+                  <input
+                    type="number"
+                    name="location[lon]"
+                    value=""
+                    step="0.0001"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="-78.6382"
+                  />
+                </div>
+              </div>
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">Radius (km)</label>
+                <input
+                  type="number"
+                  name="location[radius_km]"
+                  value=""
+                  min="5"
+                  max="500"
+                  step="5"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="50"
+                />
+              </div>
+              <button
+                type="submit"
+                class="w-full px-4 py-2.5 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold rounded-md transition-colors"
+              >
+                🚀 Save & Start Tracking!
+              </button>
+            </.form>
+          </div>
+        <% _ -> %>
+          <%!-- Should not reach here, but just in case --%>
+      <% end %>
+
+      <%!-- Skip setup entirely --%>
+      <div class="text-center">
+        <button
+          phx-click="skip_setup"
+          class="text-xs text-gray-600 hover:text-gray-400 transition-colors"
+        >
+          Skip setup and go to dashboard →
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  attr :step, :atom, required: true
+  attr :current, :atom, required: true
+  attr :label, :string, required: true
+
+  defp step_dot(assigns) do
+    step_order = %{wifi: 0, api_keys: 1, location: 2, done: 3}
+    current_idx = Map.get(step_order, assigns.current, 0)
+    step_idx = Map.get(step_order, assigns.step, 0)
+
+    assigns =
+      assign(assigns,
+        completed: step_idx < current_idx,
+        active: assigns.step == assigns.current
+      )
+
+    ~H"""
+    <div class="flex flex-col items-center gap-1">
+      <div class={[
+        "w-3 h-3 rounded-full border-2 transition-colors",
+        @completed && "bg-cyan-500 border-cyan-500",
+        @active && "bg-cyan-500 border-cyan-500 ring-2 ring-cyan-500/30",
+        (not @completed and not @active) && "bg-transparent border-gray-600"
+      ]} />
+      <span class={[
+        "text-xs",
+        if(@active or @completed, do: "text-cyan-400", else: "text-gray-600")
+      ]}>
+        {@label}
+      </span>
+    </div>
     """
   end
 
@@ -119,7 +447,7 @@ defmodule AeroVisionWeb.DashboardLive do
 
     ~H"""
     <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 space-y-3 hover:border-gray-700 transition-colors">
-      <!-- Header: callsign + airline + aircraft type -->
+      <%!-- Header: callsign + airline + aircraft type --%>
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="text-lg font-bold text-white font-mono">{@callsign}</span>
@@ -132,15 +460,15 @@ defmodule AeroVisionWeb.DashboardLive do
           <span class="text-sm font-mono text-gray-400">{@aircraft}</span>
         </div>
       </div>
-      
-    <!-- Route -->
+
+      <%!-- Route --%>
       <div class="flex items-center gap-2 text-sm">
         <span class="font-mono text-white font-medium">{@origin}</span>
         <span class="text-gray-600 text-xs">──────▶</span>
         <span class="font-mono text-white font-medium">{@destination}</span>
       </div>
-      
-    <!-- Telemetry grid -->
+
+      <%!-- Telemetry grid --%>
       <div class="grid grid-cols-3 gap-3 text-xs">
         <div class="flex flex-col gap-0.5">
           <span class="text-gray-500 uppercase tracking-wide">Alt</span>
@@ -155,8 +483,8 @@ defmodule AeroVisionWeb.DashboardLive do
           <span class="text-green-400 font-mono font-medium">{@bearing}</span>
         </div>
       </div>
-      
-    <!-- Progress bar -->
+
+      <%!-- Progress bar --%>
       <div>
         <div class="flex justify-between text-xs text-gray-600 mb-1">
           <span>Progress</span>
@@ -173,6 +501,26 @@ defmodule AeroVisionWeb.DashboardLive do
     </div>
     """
   end
+
+  # ---- Private Helpers --------------------------------------------------------
+
+  defp compute_setup_step(config) do
+    cond do
+      is_nil(config.wifi_ssid) or config.wifi_ssid == "" -> :wifi
+      is_nil(config.opensky_client_id) or config.opensky_client_id == "" -> :api_keys
+      config.location_lat == 35.7796 and config.location_lon == -78.6382 -> :location
+      true -> :done
+    end
+  end
+
+  defp parse_float(s) when is_binary(s) do
+    case Float.parse(s) do
+      {f, _} -> f
+      :error -> nil
+    end
+  end
+
+  defp parse_float(_), do: nil
 
   defp format_altitude(nil), do: "---"
 

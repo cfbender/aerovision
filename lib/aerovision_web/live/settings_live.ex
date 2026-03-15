@@ -7,6 +7,7 @@ defmodule AeroVisionWeb.SettingsLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Store.subscribe()
+      Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
     end
 
     config = Store.all()
@@ -34,6 +35,9 @@ defmodule AeroVisionWeb.SettingsLive do
        opensky_client_id: config.opensky_client_id || "",
        opensky_client_secret: config.opensky_client_secret || "",
        aeroapi_key: config.aeroapi_key || "",
+       # WiFi
+       wifi_ssid: config.wifi_ssid || "",
+       wifi_editing: config.wifi_ssid == nil,
        # System
        network_mode: network_mode,
        ip: ip,
@@ -47,6 +51,14 @@ defmodule AeroVisionWeb.SettingsLive do
   @impl true
   def handle_info({:config_changed, _key, _value}, socket) do
     {:noreply, socket}
+  end
+
+  def handle_info({:network, :connected, ip}, socket) do
+    {:noreply, assign(socket, network_mode: :infrastructure, ip: ip, wifi_editing: false)}
+  end
+
+  def handle_info({:network, :ap_mode}, socket) do
+    {:noreply, assign(socket, network_mode: :ap, ip: "192.168.24.1")}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -167,6 +179,32 @@ defmodule AeroVisionWeb.SettingsLive do
        aeroapi_key: params["aeroapi_key"],
        saved_flash: "api_keys"
      )}
+  end
+
+  # ---- WiFi -------------------------------------------------------------------
+
+  def handle_event("toggle_wifi_edit", _params, socket) do
+    {:noreply, assign(socket, wifi_editing: !socket.assigns.wifi_editing)}
+  end
+
+  def handle_event("save_wifi", %{"wifi" => params}, socket) do
+    ssid = String.trim(params["ssid"] || "")
+    password = params["password"] || ""
+
+    if ssid != "" do
+      Store.put(:wifi_ssid, ssid)
+      Store.put(:wifi_password, password)
+      AeroVision.Network.Manager.connect_wifi(ssid, password)
+
+      {:noreply,
+       assign(socket,
+         wifi_ssid: ssid,
+         wifi_editing: false,
+         saved_flash: "wifi"
+       )}
+    else
+      {:noreply, socket}
+    end
   end
 
   # ---- System -----------------------------------------------------------------
@@ -477,7 +515,101 @@ defmodule AeroVisionWeb.SettingsLive do
           </.form>
         </.settings_card>
         
-    <!-- 7. System -->
+    <!-- 7. WiFi -->
+        <.settings_card title="WiFi" icon="📶">
+          <div class="space-y-4">
+            <%!-- Current connection status --%>
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <span class={[
+                  "w-2 h-2 rounded-full",
+                  @network_mode == :infrastructure && "bg-emerald-400",
+                  @network_mode == :ap && "bg-amber-400",
+                  @network_mode not in [:infrastructure, :ap] && "bg-gray-500"
+                ]} />
+                <div>
+                  <%= if @wifi_ssid != "" do %>
+                    <div class="text-sm text-white font-medium">{@wifi_ssid}</div>
+                    <div class="text-xs text-gray-500">
+                      {network_mode_label(@network_mode)} · {@ip}
+                    </div>
+                  <% else %>
+                    <div class="text-sm text-gray-400">No WiFi configured</div>
+                    <div class="text-xs text-gray-600">
+                      Connect to a network to enable flight tracking.
+                    </div>
+                  <% end %>
+                </div>
+              </div>
+              <%= if @wifi_ssid != "" and not @wifi_editing do %>
+                <button
+                  phx-click="toggle_wifi_edit"
+                  class="px-3 py-1.5 text-xs font-medium text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-md transition-colors"
+                >
+                  Change
+                </button>
+              <% end %>
+            </div>
+
+            <%!-- WiFi form (shown when editing or when no SSID configured) --%>
+            <%= if @wifi_editing do %>
+              <div class="pt-3 border-t border-gray-800">
+                <.form for={%{}} as={:wifi} phx-submit="save_wifi" class="space-y-3">
+                  <div class="space-y-1">
+                    <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                      Network Name (SSID)
+                    </label>
+                    <input
+                      type="text"
+                      name="wifi[ssid]"
+                      value={@wifi_ssid}
+                      class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                      placeholder="MyHomeNetwork"
+                      autocomplete="off"
+                      autocorrect="off"
+                      autocapitalize="none"
+                    />
+                  </div>
+                  <div class="space-y-1">
+                    <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      name="wifi[password]"
+                      value=""
+                      class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                      placeholder="••••••••"
+                      autocomplete="new-password"
+                    />
+                  </div>
+                  <p class="text-xs text-amber-400/70">
+                    ⚠ Changing WiFi will disconnect the device. You may need to reconnect to the new network.
+                  </p>
+                  <div class="flex gap-3">
+                    <button
+                      type="submit"
+                      class="flex-1 px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
+                    >
+                      Connect
+                    </button>
+                    <%= if @wifi_ssid != "" do %>
+                      <button
+                        type="button"
+                        phx-click="toggle_wifi_edit"
+                        class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-md border border-gray-700 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    <% end %>
+                  </div>
+                </.form>
+              </div>
+            <% end %>
+          </div>
+        </.settings_card>
+        
+    <!-- 8. System -->
         <.settings_card title="System" icon="⚙️">
           <div class="space-y-4">
             <div class="grid grid-cols-2 gap-3 text-sm">
