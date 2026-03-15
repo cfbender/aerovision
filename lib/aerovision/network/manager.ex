@@ -57,6 +57,40 @@ defmodule AeroVision.Network.Manager do
     GenServer.cast(__MODULE__, :force_ap_mode)
   end
 
+  @doc """
+  Scan for available WiFi networks. Returns a list of maps with `:ssid`, `:signal`, and `:security`.
+  Only works on target; returns `[]` on host.
+  """
+  def scan_networks do
+    if Application.get_env(:aerovision, :target, :host) != :host do
+      try do
+        case VintageNet.get(["interface", "wlan0", "wifi", "access_points"]) do
+          aps when is_map(aps) ->
+            aps
+            |> Enum.map(fn {ssid, info} ->
+              %{
+                ssid: ssid,
+                signal: Map.get(info, :signal_dbm, -80),
+                security:
+                  if(Map.get(info, :flags, []) |> Enum.any?(&(&1 == :wpa2_psk)),
+                    do: "WPA2",
+                    else: "Open"
+                  )
+              }
+            end)
+            |> Enum.sort_by(& &1.signal, :desc)
+
+          _ ->
+            []
+        end
+      rescue
+        _ -> []
+      end
+    else
+      []
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # GenServer callbacks
   # ---------------------------------------------------------------------------
@@ -246,7 +280,10 @@ defmodule AeroVision.Network.Manager do
   end
 
   defp handle_connection_change(:disconnected, %{mode: :infrastructure} = state) do
-    Logger.warning("[Network.Manager] Disconnected — starting #{@reconnect_timeout_ms}ms fallback timer")
+    Logger.warning(
+      "[Network.Manager] Disconnected — starting #{@reconnect_timeout_ms}ms fallback timer"
+    )
+
     state = cancel_reconnect_timer(state)
     timer = Process.send_after(self(), :reconnect_timeout, @reconnect_timeout_ms)
     %{state | mode: :disconnected, reconnect_timer: timer}

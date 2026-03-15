@@ -38,6 +38,8 @@ defmodule AeroVisionWeb.SettingsLive do
        # WiFi
        wifi_ssid: config.wifi_ssid || "",
        wifi_editing: config.wifi_ssid == nil,
+       wifi_scan_results: [],
+       wifi_scanning: false,
        # System
        network_mode: network_mode,
        ip: ip,
@@ -59,6 +61,11 @@ defmodule AeroVisionWeb.SettingsLive do
 
   def handle_info({:network, :ap_mode}, socket) do
     {:noreply, assign(socket, network_mode: :ap, ip: "192.168.24.1")}
+  end
+
+  def handle_info(:wifi_scan_complete, socket) do
+    networks = AeroVision.Network.Manager.scan_networks()
+    {:noreply, assign(socket, wifi_scanning: false, wifi_scan_results: networks)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -185,6 +192,19 @@ defmodule AeroVisionWeb.SettingsLive do
 
   def handle_event("toggle_wifi_edit", _params, socket) do
     {:noreply, assign(socket, wifi_editing: !socket.assigns.wifi_editing)}
+  end
+
+  def handle_event("scan_wifi", _params, socket) do
+    if on_target?() do
+      send(self(), :wifi_scan_complete)
+      {:noreply, assign(socket, wifi_scanning: true, wifi_scan_results: [])}
+    else
+      {:noreply, assign(socket, wifi_scanning: false, wifi_scan_results: [])}
+    end
+  end
+
+  def handle_event("select_wifi_network", %{"ssid" => ssid}, socket) do
+    {:noreply, assign(socket, wifi_ssid: ssid)}
   end
 
   def handle_event("save_wifi", %{"wifi" => params}, socket) do
@@ -514,15 +534,15 @@ defmodule AeroVisionWeb.SettingsLive do
             <.save_button />
           </.form>
         </.settings_card>
-        
-    <!-- 7. WiFi -->
+
+        <%!-- 7. WiFi --%>
         <.settings_card title="WiFi" icon="📶">
           <div class="space-y-4">
             <%!-- Current connection status --%>
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
                 <span class={[
-                  "w-2 h-2 rounded-full",
+                  "w-2 h-2 rounded-full shrink-0",
                   @network_mode == :infrastructure && "bg-emerald-400",
                   @network_mode == :ap && "bg-amber-400",
                   @network_mode not in [:infrastructure, :ap] && "bg-gray-500"
@@ -551,9 +571,67 @@ defmodule AeroVisionWeb.SettingsLive do
               <% end %>
             </div>
 
-            <%!-- WiFi form (shown when editing or when no SSID configured) --%>
+            <%!-- WiFi form (shown when editing or no SSID configured) --%>
             <%= if @wifi_editing do %>
-              <div class="pt-3 border-t border-gray-800">
+              <div class="pt-3 border-t border-gray-800 space-y-3">
+                <%!-- Scan button + results --%>
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-gray-400 uppercase tracking-wide">
+                    Available Networks
+                  </span>
+                  <button
+                    phx-click="scan_wifi"
+                    disabled={@wifi_scanning}
+                    class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-300 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 border border-gray-700 rounded-md transition-colors"
+                  >
+                    <%= if @wifi_scanning do %>
+                      <span class="animate-spin inline-block">⟳</span> Scanning…
+                    <% else %>
+                      <span>⟳</span> Scan
+                    <% end %>
+                  </button>
+                </div>
+
+                <%!-- Network list --%>
+                <%= if @wifi_scan_results != [] do %>
+                  <div class="rounded-md border border-gray-700 overflow-hidden divide-y divide-gray-700/50">
+                    <%= for network <- @wifi_scan_results do %>
+                      <button
+                        type="button"
+                        phx-click="select_wifi_network"
+                        phx-value-ssid={network.ssid}
+                        class={[
+                          "w-full flex items-center justify-between px-3 py-2 text-left text-sm transition-colors",
+                          @wifi_ssid == network.ssid &&
+                            "bg-cyan-950 text-cyan-300",
+                          @wifi_ssid != network.ssid &&
+                            "bg-gray-800 hover:bg-gray-750 text-white"
+                        ]}
+                      >
+                        <div class="flex items-center gap-2 min-w-0">
+                          <span class="text-xs">
+                            {wifi_signal_icon(network.signal)}
+                          </span>
+                          <span class="truncate font-medium">{network.ssid}</span>
+                          <span class="text-xs text-gray-500 shrink-0">{network.security}</span>
+                        </div>
+                        <%= if @wifi_ssid == network.ssid do %>
+                          <span class="text-xs font-medium shrink-0 ml-2">✓</span>
+                        <% end %>
+                      </button>
+                    <% end %>
+                  </div>
+                <% else %>
+                  <%= if not @wifi_scanning do %>
+                    <p class="text-xs text-gray-600 text-center py-2">
+                      {if on_target?(),
+                        do: "Press Scan to find nearby networks.",
+                        else: "WiFi scanning is not available in development mode."}
+                    </p>
+                  <% end %>
+                <% end %>
+
+                <%!-- Manual SSID entry + password form --%>
                 <.form for={%{}} as={:wifi} phx-submit="save_wifi" class="space-y-3">
                   <div class="space-y-1">
                     <label class="block text-xs text-gray-400 uppercase tracking-wide">
@@ -733,4 +811,9 @@ defmodule AeroVisionWeb.SettingsLive do
   defp network_mode_label(:ap), do: "AP Mode (setup)"
   defp network_mode_label(:disconnected), do: "Disconnected"
   defp network_mode_label(_), do: "Unknown"
+
+  defp wifi_signal_icon(rssi) when rssi >= -50, do: "▂▄▆█"
+  defp wifi_signal_icon(rssi) when rssi >= -65, do: "▂▄▆░"
+  defp wifi_signal_icon(rssi) when rssi >= -80, do: "▂▄░░"
+  defp wifi_signal_icon(_), do: "▂░░░"
 end

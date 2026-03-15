@@ -28,7 +28,10 @@ defmodule AeroVisionWeb.DashboardLive do
        ip: ip,
        # Setup wizard
        setup_step: setup_step,
-       setup_complete: setup_step == :done
+       setup_complete: setup_step == :done,
+       wizard_ssid: "",
+       wizard_scan_results: [],
+       wizard_scanning: false
      )}
   end
 
@@ -49,6 +52,11 @@ defmodule AeroVisionWeb.DashboardLive do
     config = AeroVision.Config.Store.all()
     setup_step = compute_setup_step(config)
     {:noreply, assign(socket, setup_step: setup_step, setup_complete: setup_step == :done)}
+  end
+
+  def handle_info(:wizard_scan_complete, socket) do
+    networks = AeroVision.Network.Manager.scan_networks()
+    {:noreply, assign(socket, wizard_scanning: false, wizard_scan_results: networks)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -101,6 +109,19 @@ defmodule AeroVisionWeb.DashboardLive do
     config = AeroVision.Config.Store.all()
     next_step = compute_setup_step(config)
     {:noreply, assign(socket, setup_step: next_step, setup_complete: next_step == :done)}
+  end
+
+  def handle_event("wizard_scan_wifi", _params, socket) do
+    if Application.get_env(:aerovision, :target, :host) != :host do
+      send(self(), :wizard_scan_complete)
+      {:noreply, assign(socket, wizard_scanning: true, wizard_scan_results: [])}
+    else
+      {:noreply, assign(socket, wizard_scanning: false, wizard_scan_results: [])}
+    end
+  end
+
+  def handle_event("wizard_select_network", %{"ssid" => ssid}, socket) do
+    {:noreply, assign(socket, wizard_ssid: ssid)}
   end
 
   def handle_event("skip_setup", _params, socket) do
@@ -217,6 +238,69 @@ defmodule AeroVisionWeb.DashboardLive do
                 <p class="text-xs text-gray-500">Required for fetching flight data.</p>
               </div>
             </div>
+
+            <%!-- Scan button + results --%>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-gray-400 uppercase tracking-wide">Available Networks</span>
+                <button
+                  phx-click="wizard_scan_wifi"
+                  disabled={@wizard_scanning}
+                  class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-300 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 border border-gray-700 rounded-md transition-colors"
+                >
+                  <%= if @wizard_scanning do %>
+                    <span class="animate-spin inline-block">⟳</span> Scanning…
+                  <% else %>
+                    <span>⟳</span> Scan
+                  <% end %>
+                </button>
+              </div>
+
+              <%= if @wizard_scan_results != [] do %>
+                <div class="rounded-md border border-gray-700 overflow-hidden divide-y divide-gray-700/50">
+                  <%= for network <- @wizard_scan_results do %>
+                    <button
+                      type="button"
+                      phx-click="wizard_select_network"
+                      phx-value-ssid={network.ssid}
+                      class={[
+                        "w-full flex items-center justify-between px-3 py-2.5 text-left text-sm transition-colors",
+                        @wizard_ssid == network.ssid &&
+                          "bg-cyan-950 text-cyan-300",
+                        @wizard_ssid != network.ssid &&
+                          "bg-gray-800/50 hover:bg-gray-800 text-white"
+                      ]}
+                    >
+                      <div class="flex items-center gap-2 min-w-0">
+                        <span class="font-mono text-xs text-green-400">
+                          {cond do
+                            network.signal >= -50 -> "▂▄▆█"
+                            network.signal >= -65 -> "▂▄▆░"
+                            network.signal >= -80 -> "▂▄░░"
+                            true -> "▂░░░"
+                          end}
+                        </span>
+                        <span class="truncate font-medium">{network.ssid}</span>
+                        <span class="text-xs text-gray-500 shrink-0">{network.security}</span>
+                      </div>
+                      <%= if @wizard_ssid == network.ssid do %>
+                        <span class="text-xs font-medium shrink-0 ml-2">✓</span>
+                      <% end %>
+                    </button>
+                  <% end %>
+                </div>
+              <% else %>
+                <%= if not @wizard_scanning do %>
+                  <p class="text-xs text-gray-600 text-center py-1">
+                    {if Application.get_env(:aerovision, :target, :host) != :host,
+                      do: "WiFi scanning not available in development mode.",
+                      else: "Press Scan to find nearby networks."}
+                  </p>
+                <% end %>
+              <% end %>
+            </div>
+
+            <%!-- Connection form --%>
             <.form for={%{}} as={:wifi} phx-submit="setup_wifi" class="space-y-3">
               <div class="space-y-1">
                 <label class="block text-xs text-gray-400 uppercase tracking-wide">
@@ -225,7 +309,7 @@ defmodule AeroVisionWeb.DashboardLive do
                 <input
                   type="text"
                   name="wifi[ssid]"
-                  value=""
+                  value={@wizard_ssid}
                   class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                   placeholder="MyHomeNetwork"
                   autocomplete="off"
@@ -249,6 +333,7 @@ defmodule AeroVisionWeb.DashboardLive do
                 Connect
               </button>
             </.form>
+
             <button
               phx-click="skip_step"
               class="w-full text-center text-xs text-gray-600 hover:text-gray-400 transition-colors py-1"

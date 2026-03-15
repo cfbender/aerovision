@@ -57,7 +57,7 @@ defmodule AeroVisionWeb.SetupLive do
 
   @impl true
   def handle_info(:do_scan, socket) do
-    networks = scan_wifi_networks()
+    networks = AeroVision.Network.Manager.scan_networks()
     {:noreply, assign(socket, scanning: false, scan_results: networks)}
   end
 
@@ -318,12 +318,21 @@ defmodule AeroVisionWeb.SetupLive do
   attr :rssi, :integer, required: true
 
   defp signal_icon(%{rssi: rssi} = assigns) do
-    cond do
-      rssi >= -50 -> ~H"📶"
-      rssi >= -65 -> ~H"📶"
-      rssi >= -80 -> ~H"📶"
-      true -> ~H"📵"
-    end
+    assigns =
+      assign(
+        assigns,
+        :icon,
+        cond do
+          rssi >= -50 -> "▂▄▆█"
+          rssi >= -65 -> "▂▄▆░"
+          rssi >= -80 -> "▂▄░░"
+          true -> "▂░░░"
+        end
+      )
+
+    ~H"""
+    <span class="font-mono text-xs text-green-400">{@icon}</span>
+    """
   end
 
   # ---- Helpers ----------------------------------------------------------------
@@ -335,35 +344,5 @@ defmodule AeroVisionWeb.SetupLive do
 
   defp on_target? do
     Application.get_env(:aerovision, :target, :host) != :host
-  end
-
-  defp scan_wifi_networks do
-    if on_target?() do
-      try do
-        case VintageNet.get(["interface", "wlan0", "wifi", "access_points"]) do
-          aps when is_map(aps) ->
-            aps
-            |> Enum.map(fn {ssid, info} ->
-              %{
-                ssid: ssid,
-                signal: Map.get(info, :signal_dbm, -80),
-                security:
-                  if(Map.get(info, :flags, []) |> Enum.any?(&(&1 == :wpa2_psk)),
-                    do: "WPA2",
-                    else: "Open"
-                  )
-              }
-            end)
-            |> Enum.sort_by(& &1.signal, :desc)
-
-          _ ->
-            []
-        end
-      rescue
-        _ -> []
-      end
-    else
-      []
-    end
   end
 end

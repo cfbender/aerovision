@@ -406,7 +406,7 @@ For airline filters, use the ICAO operator code (3 letters), not the IATA code (
 | FedEx | `FDX` | `FX` |
 | UPS Airlines | `UPS` | `5X` |
 
-A full list is available at [airlinecodes.co.uk](https://www.airlinecodes.co.uk/).
+A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_airline_codes).
 
 ---
 
