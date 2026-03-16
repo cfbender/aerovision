@@ -15,14 +15,19 @@ var previewPixels bool
 
 // MatrixConfig holds LED matrix hardware configuration
 type MatrixConfig struct {
-	Rows            int
-	Cols            int
-	ChainLength     int
-	Parallel        int
-	Brightness      int
-	HardwareMapping string
-	DisableHWPulse  bool
-	SlowdownGPIO    int
+	Rows              int
+	Cols              int
+	ChainLength       int
+	Parallel          int
+	Brightness        int
+	HardwareMapping   string
+	DisableHWPulse    bool
+	SlowdownGPIO      int
+	LimitRefreshHz    int
+	PWMBits           int
+	PWMLSBNanoseconds int
+	PWMDitherBits     int
+	ShowRefreshRate   bool
 }
 
 // Matrix is the interface for LED matrix operations

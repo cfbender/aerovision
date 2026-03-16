@@ -32,6 +32,9 @@ defmodule AeroVisionWeb.DashboardLive do
        setup_step: setup_step,
        setup_complete: setup_step == :done,
        wizard_ssid: "",
+       wizard_password: "",
+       wizard_wifi_saved: false,
+       wizard_connecting: false,
        wizard_scan_results: [],
        wizard_scanning: false
      )}
@@ -56,8 +59,7 @@ defmodule AeroVisionWeb.DashboardLive do
     {:noreply, assign(socket, setup_step: setup_step, setup_complete: setup_step == :done)}
   end
 
-  def handle_info(:wizard_scan_complete, socket) do
-    networks = AeroVision.Network.Manager.scan_networks()
+  def handle_info({:wizard_scan_complete, networks}, socket) do
     {:noreply, assign(socket, wizard_scanning: false, wizard_scan_results: networks)}
   end
 
@@ -71,12 +73,21 @@ defmodule AeroVisionWeb.DashboardLive do
     password = params["password"] || ""
 
     if ssid != "" do
+      # Save credentials now so later steps can read them, but defer the
+      # actual WiFi connection until setup is complete — connecting immediately
+      # would drop the AP and disconnect the browser before setup is done.
       AeroVision.Config.Store.put(:wifi_ssid, ssid)
       AeroVision.Config.Store.put(:wifi_password, password)
-      AeroVision.Network.Manager.connect_wifi(ssid, password)
 
       config = AeroVision.Config.Store.all()
-      {:noreply, assign(socket, setup_step: compute_setup_step(config))}
+
+      {:noreply,
+       assign(socket,
+         wizard_ssid: ssid,
+         wizard_password: password,
+         wizard_wifi_saved: true,
+         setup_step: compute_setup_step(config)
+       )}
     else
       {:noreply, socket}
     end
@@ -110,12 +121,39 @@ defmodule AeroVisionWeb.DashboardLive do
 
     config = AeroVision.Config.Store.all()
     next_step = compute_setup_step(config)
-    {:noreply, assign(socket, setup_step: next_step, setup_complete: next_step == :done)}
+
+    # Setup complete — now trigger WiFi connection if credentials were entered.
+    # This is deferred to here so the browser stays connected to the AP long
+    # enough for the user to finish all steps.
+    connecting =
+      if next_step == :done and socket.assigns.wizard_wifi_saved do
+        AeroVision.Network.Manager.connect_wifi(
+          socket.assigns.wizard_ssid,
+          socket.assigns.wizard_password
+        )
+
+        true
+      else
+        false
+      end
+
+    {:noreply,
+     assign(socket,
+       setup_step: next_step,
+       setup_complete: next_step == :done,
+       wizard_connecting: connecting
+     )}
   end
 
   def handle_event("wizard_scan_wifi", _params, socket) do
     if Application.get_env(:aerovision, :target, :host) != :host do
-      send(self(), :wizard_scan_complete)
+      lv = self()
+
+      Task.start(fn ->
+        networks = AeroVision.Network.Manager.scan_networks()
+        send(lv, {:wizard_scan_complete, networks})
+      end)
+
       {:noreply, assign(socket, wizard_scanning: true, wizard_scan_results: [])}
     else
       {:noreply, assign(socket, wizard_scanning: false, wizard_scan_results: [])}
@@ -126,8 +164,25 @@ defmodule AeroVisionWeb.DashboardLive do
     {:noreply, assign(socket, wizard_ssid: ssid)}
   end
 
+  def handle_event("setup_wifi_redo", _params, socket) do
+    {:noreply, assign(socket, wizard_wifi_saved: false, wizard_ssid: "", wizard_password: "")}
+  end
+
   def handle_event("skip_setup", _params, socket) do
-    {:noreply, assign(socket, setup_step: :done, setup_complete: true)}
+    connecting =
+      if socket.assigns.wizard_wifi_saved do
+        AeroVision.Network.Manager.connect_wifi(
+          socket.assigns.wizard_ssid,
+          socket.assigns.wizard_password
+        )
+
+        true
+      else
+        false
+      end
+
+    {:noreply,
+     assign(socket, setup_step: :done, setup_complete: true, wizard_connecting: connecting)}
   end
 
   def handle_event("skip_step", _params, socket) do
@@ -139,7 +194,24 @@ defmodule AeroVisionWeb.DashboardLive do
         _ -> :done
       end
 
-    {:noreply, assign(socket, setup_step: next_step, setup_complete: next_step == :done)}
+    connecting =
+      if next_step == :done and socket.assigns.wizard_wifi_saved do
+        AeroVision.Network.Manager.connect_wifi(
+          socket.assigns.wizard_ssid,
+          socket.assigns.wizard_password
+        )
+
+        true
+      else
+        false
+      end
+
+    {:noreply,
+     assign(socket,
+       setup_step: next_step,
+       setup_complete: next_step == :done,
+       wizard_connecting: connecting
+     )}
   end
 
   # ---- Render -----------------------------------------------------------------
@@ -160,6 +232,23 @@ defmodule AeroVisionWeb.DashboardLive do
   defp flight_dashboard(assigns) do
     ~H"""
     <div class="space-y-6">
+      <%!-- WiFi connecting banner --%>
+      <%= if @wizard_connecting do %>
+        <div class="flex items-start gap-3 px-4 py-3 rounded-lg bg-amber-950 border border-amber-700 text-amber-300 text-sm">
+          <span class="text-lg shrink-0 animate-spin">⟳</span>
+          <div>
+            <div class="font-medium">
+              Rebooting to connect to <span class="font-mono">{@wizard_ssid}</span>…
+            </div>
+            <div class="text-xs opacity-80 mt-0.5">
+              The device will reboot in a few seconds. Reconnect your device to
+              <span class="font-mono font-medium">{@wizard_ssid}</span>
+              and visit <span class="font-mono font-medium">http://aerovision.local</span>
+            </div>
+          </div>
+        </div>
+      <% end %>
+
       <%!-- Status Bar --%>
       <div class="flex items-center justify-between flex-wrap gap-3">
         <div class="flex items-center gap-3">
@@ -295,53 +384,79 @@ defmodule AeroVisionWeb.DashboardLive do
                 <%= if not @wizard_scanning do %>
                   <p class="text-xs text-gray-600 text-center py-1">
                     {if Application.get_env(:aerovision, :target, :host) != :host,
-                      do: "WiFi scanning not available in development mode.",
-                      else: "Press Scan to find nearby networks."}
+                      do: "Press Scan to find nearby networks.",
+                      else: "WiFi scanning not available in development mode."}
                   </p>
                 <% end %>
               <% end %>
             </div>
 
-            <%!-- Connection form --%>
-            <.form for={%{}} as={:wifi} phx-submit="setup_wifi" class="space-y-3">
-              <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                  Network Name (SSID)
-                </label>
-                <input
-                  type="text"
-                  name="wifi[ssid]"
-                  value={@wizard_ssid}
-                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="MyHomeNetwork"
-                  autocomplete="off"
-                />
+            <%!-- Connection form or saved confirmation --%>
+            <%= if @wizard_wifi_saved do %>
+              <div class="flex items-center gap-3 px-4 py-3 rounded-lg bg-emerald-950 border border-emerald-700 text-emerald-300 text-sm">
+                <span class="text-lg">✅</span>
+                <div class="min-w-0">
+                  <div class="font-medium">Network saved</div>
+                  <div class="text-xs opacity-70 truncate font-mono">{@wizard_ssid}</div>
+                </div>
               </div>
-              <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">Password</label>
-                <input
-                  type="password"
-                  name="wifi[password]"
-                  value=""
-                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="••••••••"
-                  autocomplete="new-password"
-                />
-              </div>
+              <p class="text-xs text-gray-500 text-center">
+                AeroVision will connect to <span class="text-white font-medium">{@wizard_ssid}</span>
+                when setup is complete.
+              </p>
               <button
-                type="submit"
+                phx-click="skip_step"
                 class="w-full px-4 py-2.5 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-semibold rounded-md transition-colors"
               >
-                Connect
+                Continue →
               </button>
-            </.form>
-
-            <button
-              phx-click="skip_step"
-              class="w-full text-center text-xs text-gray-600 hover:text-gray-400 transition-colors py-1"
-            >
-              Skip for now →
-            </button>
+              <button
+                phx-click="setup_wifi_redo"
+                class="w-full text-center text-xs text-gray-600 hover:text-gray-400 transition-colors py-1"
+              >
+                Change network
+              </button>
+            <% else %>
+              <.form for={%{}} as={:wifi} phx-submit="setup_wifi" class="space-y-3">
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                    Network Name (SSID)
+                  </label>
+                  <input
+                    type="text"
+                    name="wifi[ssid]"
+                    value={@wizard_ssid}
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="MyHomeNetwork"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    name="wifi[password]"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="••••••••"
+                    autocomplete="new-password"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  class="w-full px-4 py-2.5 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-semibold rounded-md transition-colors"
+                >
+                  Save & Continue →
+                </button>
+              </.form>
+              <button
+                phx-click="skip_step"
+                class="w-full text-center text-xs text-gray-600 hover:text-gray-400 transition-colors py-1"
+              >
+                Skip for now →
+              </button>
+            <% end %>
           </div>
         <% :api_keys -> %>
           <div class="bg-gray-900 rounded-lg border border-gray-800 p-6 space-y-4">

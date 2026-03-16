@@ -256,6 +256,7 @@ defmodule AeroVision.Config.StoreTest do
     GenServer.stop(pid)
   end
 
+  @tag :capture_log
   test "corrupt JSON file falls back to defaults", %{tmp: tmp} do
     File.write!(Path.join(tmp, "settings.json"), "not valid json {{{{")
 

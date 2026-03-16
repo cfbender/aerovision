@@ -228,30 +228,49 @@ defmodule AeroVision.Config.Store do
   defp decode_value(_key, value), do: value
 
   # ---------------------------------------------------------------------------
-  # .env seeding
+  # Build-time env seeding
   # ---------------------------------------------------------------------------
 
-  # Seed API keys from environment variables on first boot.
-  # Only writes keys that aren't already stored — manual Settings changes
-  # always take precedence over .env values.
+  # Seed settings from values baked into the firmware at build time via
+  # config/config.exs → Application.get_env(:aerovision, :env_seeds).
+  # Raw values are strings (from the .env file); each needs type coercion.
+  # Only seeds keys that are blank in stored — UI changes always win.
   defp seed_from_env(stored, file_path) do
-    load_dot_env()
+    seeds = Application.get_env(:aerovision, :env_seeds, %{})
 
     updated =
-      [
-        {"OPENSKY_CLIENT_ID", :opensky_client_id},
-        {"OPENSKY_CLIENT_SECRET", :opensky_client_secret},
-        {"AEROAPI_KEY", :aeroapi_key}
-      ]
-      |> Enum.reduce(stored, fn {env_var, config_key}, acc ->
-        with value when is_binary(value) and value != "" <- System.get_env(env_var),
-             true <- not Map.has_key?(acc, config_key) or is_nil(Map.get(acc, config_key)) do
-          Logger.info("[Config.Store] Seeded #{config_key} from environment")
+      seeds
+      |> Enum.reduce(stored, fn {config_key, raw}, acc ->
+        with raw when is_binary(raw) and raw != "" <- raw,
+             {:ok, value} <- coerce(config_key, raw),
+             true <- blank_in_stored?(acc, config_key) do
+          Logger.info("[Config.Store] Seeded #{config_key} from build-time env")
           Map.put(acc, config_key, value)
         else
           _ -> acc
         end
       end)
+
+    # :radius_mi is a special case — it maps to :radius_km after conversion
+    updated =
+      case Map.get(seeds, :radius_mi) do
+        raw when is_binary(raw) and raw != "" ->
+          if blank_in_stored?(updated, :radius_km) do
+            case parse_miles(raw) do
+              {:ok, km} ->
+                Logger.info("[Config.Store] Seeded radius_km from RADIUS_MI (#{raw} mi)")
+                Map.put(updated, :radius_km, km)
+
+              :error ->
+                updated
+            end
+          else
+            updated
+          end
+
+        _ ->
+          updated
+      end
 
     if updated != stored do
       write_file(file_path, updated)
@@ -260,55 +279,59 @@ defmodule AeroVision.Config.Store do
     updated
   end
 
-  # Parse a .env file from the project root and load its KEY=VALUE pairs
-  # into the process environment. Only runs on host (dev/test), not on target.
-  # Silently skips if the file doesn't exist or can't be read.
-  defp load_dot_env do
-    if Application.get_env(:aerovision, :target, :host) in [:host, :test] do
-      dot_env_path =
-        case Application.get_env(:aerovision, :dot_env_path) do
-          nil -> Path.join(File.cwd!(), ".env")
-          path -> path
-        end
+  # Type-coerce a raw string value for the given config key.
+  defp coerce(key, raw) when key in [:location_lat, :location_lon, :radius_km] do
+    case Float.parse(raw) do
+      {f, _} -> {:ok, f}
+      :error -> :error
+    end
+  end
 
-      case File.read(dot_env_path) do
-        {:ok, contents} ->
-          contents
-          |> String.split("\n", trim: true)
-          |> Enum.each(fn line ->
-            line = String.trim(line)
+  defp coerce(key, raw)
+       when key in [:display_brightness, :display_cycle_seconds, :poll_interval_sec] do
+    case Integer.parse(raw) do
+      {i, _} -> {:ok, i}
+      :error -> :error
+    end
+  end
 
-            cond do
-              line == "" or String.starts_with?(line, "#") ->
-                :ok
+  defp coerce(:display_mode, "nearby"), do: {:ok, :nearby}
+  defp coerce(:display_mode, "tracked"), do: {:ok, :tracked}
+  defp coerce(:display_mode, _), do: :error
 
-              String.contains?(line, "=") ->
-                [key | rest] = String.split(line, "=", parts: 2)
-                key = String.trim(key)
-                value = rest |> Enum.join("=") |> String.trim()
+  defp coerce(:units, "imperial"), do: {:ok, :imperial}
+  defp coerce(:units, "metric"), do: {:ok, :metric}
+  defp coerce(:units, _), do: :error
 
-                value =
-                  cond do
-                    String.starts_with?(value, "\"") and String.ends_with?(value, "\"") ->
-                      String.slice(value, 1..-2//1)
+  defp coerce(key, raw) when key in [:tracked_flights, :airline_filters, :airport_filters] do
+    items =
+      raw
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
 
-                    String.starts_with?(value, "'") and String.ends_with?(value, "'") ->
-                      String.slice(value, 1..-2//1)
+    {:ok, items}
+  end
 
-                    true ->
-                      value
-                  end
+  # :radius_mi is handled separately above — skip here
+  defp coerce(:radius_mi, _), do: :error
 
-                if key != "" and value != "", do: System.put_env(key, value)
+  defp coerce(_key, raw), do: {:ok, raw}
 
-              true ->
-                :ok
-            end
-          end)
+  defp parse_miles(s) do
+    case Float.parse(s) do
+      {miles, _} -> {:ok, Float.round(miles * 1.60934, 3)}
+      :error -> :error
+    end
+  end
 
-        {:error, _} ->
-          :ok
-      end
+  # A key is "blank" if it's missing, nil, or an empty list/string.
+  defp blank_in_stored?(stored, key) do
+    case Map.get(stored, key) do
+      nil -> true
+      "" -> true
+      [] -> true
+      _ -> false
     end
   end
 

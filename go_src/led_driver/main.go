@@ -27,7 +27,16 @@ func main() {
 	demo := flag.Bool("demo", false, "Show a sample flight card and enter preview mode (implies --preview)")
 	previewIpc := flag.Bool("preview-ipc", false, "Send rendered frames back over stdout as IPC packets (implies --preview)")
 	previewPixelsFlag := flag.Bool("preview-pixels", false, "Send pixel data back over stdout as IPC packets (implies --preview)")
+	limitRefresh := flag.Int("led-limit-refresh", 0, "Limit refresh rate to this frequency in Hz (0=no limit)")
+	pwmBits := flag.Int("led-pwm-bits", 11, "PWM bits used for brightness level (1-11)")
+	pwmLsbNs := flag.Int("led-pwm-lsb-nanoseconds", 130, "PWM LSB nanoseconds (baseline time for lowest bit)")
+	pwmDitherBits := flag.Int("led-pwm-dither-bits", 0, "Time dithering of lower bits (0=no dithering)")
+	showRefresh := flag.Bool("led-show-refresh", false, "Show refresh rate on stderr")
 	flag.Parse()
+
+	// Redirect C's stdout to a pipe when --led-show-refresh is enabled.
+	// Must happen before NewMatrix() which spawns the hzeller refresh thread.
+	redirectCStdout(*showRefresh)
 
 	// --demo implies --preview.
 	if *demo {
@@ -59,20 +68,33 @@ func main() {
 		previewMode = true
 	}
 
-	config := &MatrixConfig{
-		Rows:            *rows,
-		Cols:            *cols,
-		ChainLength:     *chain,
-		Parallel:        *parallel,
-		Brightness:      *brightness,
-		HardwareMapping: *gpioMapping,
-		DisableHWPulse:  *noHwPulse,
-		SlowdownGPIO:    *slowdownGpio,
-	}
-
-	matrix, err := NewMatrix(config)
-	if err != nil {
-		log.Fatalf("Failed to initialize matrix: %v", err)
+	// When --preview-pixels is set, use an in-memory software matrix that sends
+	// pixel data back over stdout. This works on both emulator and real-hardware
+	// builds — no GPIO or hardware init is performed.
+	var matrix Matrix
+	if *previewPixelsFlag {
+		matrix = NewSoftwareMatrix(*cols**chain, *rows**parallel)
+	} else {
+		config := &MatrixConfig{
+			Rows:              *rows,
+			Cols:              *cols,
+			ChainLength:       *chain,
+			Parallel:          *parallel,
+			Brightness:        *brightness,
+			HardwareMapping:   *gpioMapping,
+			DisableHWPulse:    *noHwPulse,
+			SlowdownGPIO:      *slowdownGpio,
+			LimitRefreshHz:    *limitRefresh,
+			PWMBits:           *pwmBits,
+			PWMLSBNanoseconds: *pwmLsbNs,
+			PWMDitherBits:     *pwmDitherBits,
+			ShowRefreshRate:   *showRefresh,
+		}
+		var err error
+		matrix, err = NewMatrix(config)
+		if err != nil {
+			log.Fatalf("Failed to initialize matrix: %v", err)
+		}
 	}
 	defer matrix.Close()
 

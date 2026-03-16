@@ -2,6 +2,75 @@ import Config
 
 config :aerovision, target: Mix.target()
 
+# ---------------------------------------------------------------------------
+# Build-time .env injection
+#
+# Read the .env file at build time and bake the values into the firmware as
+# application config. Config.Store reads these at startup via
+# Application.get_env(:aerovision, :env_seeds) — no file I/O needed on device.
+#
+# Values are only used to seed blank settings; anything already saved through
+# the UI takes precedence.
+# ---------------------------------------------------------------------------
+
+dot_env_path = Path.join(File.cwd!(), ".env")
+
+dot_env_raw =
+  if File.exists?(dot_env_path) do
+    dot_env_path
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.reduce(%{}, fn line, acc ->
+      line = String.trim(line)
+
+      if line == "" or String.starts_with?(line, "#") or not String.contains?(line, "=") do
+        acc
+      else
+        [key | rest] = String.split(line, "=", parts: 2)
+        key = String.trim(key)
+        value = rest |> Enum.join("=") |> String.trim()
+
+        value =
+          cond do
+            String.starts_with?(value, "\"") and String.ends_with?(value, "\"") ->
+              String.slice(value, 1..-2//1)
+
+            String.starts_with?(value, "'") and String.ends_with?(value, "'") ->
+              String.slice(value, 1..-2//1)
+
+            true ->
+              value
+          end
+
+        if key != "" and value != "", do: Map.put(acc, key, value), else: acc
+      end
+    end)
+  else
+    %{}
+  end
+
+e = fn key -> Map.get(dot_env_raw, key) end
+
+config :aerovision, :env_seeds, %{
+  opensky_client_id: e.("OPENSKY_CLIENT_ID"),
+  opensky_client_secret: e.("OPENSKY_CLIENT_SECRET"),
+  aeroapi_key: e.("AEROAPI_KEY"),
+  wifi_ssid: e.("WIFI_SSID"),
+  wifi_password: e.("WIFI_PASSWORD"),
+  location_lat: e.("LOCATION_LAT"),
+  location_lon: e.("LOCATION_LON"),
+  radius_km: e.("RADIUS_KM"),
+  radius_mi: e.("RADIUS_MI"),
+  display_brightness: e.("DISPLAY_BRIGHTNESS"),
+  display_cycle_seconds: e.("DISPLAY_CYCLE_SECONDS"),
+  display_mode: e.("DISPLAY_MODE"),
+  poll_interval_sec: e.("POLL_INTERVAL_SEC"),
+  units: e.("UNITS"),
+  tracked_flights: e.("TRACKED_FLIGHTS"),
+  airline_filters: e.("AIRLINE_FILTERS"),
+  airport_filters: e.("AIRPORT_FILTERS")
+}
+
 # Phoenix config
 config :aerovision, AeroVisionWeb.Endpoint,
   url: [host: "localhost"],

@@ -24,11 +24,14 @@ defmodule VintageNet do
   def subscribe(_property), do: :ok
   def get(_property), do: nil
   def get_configuration(_interface), do: nil
+  def scan(_interface), do: []
+  def unsubscribe(_property), do: :ok
 end
 
 defmodule Nerves.Runtime do
   @moduledoc "Stub for Nerves.Runtime — satisfies compiler in test/host envs."
   def reboot, do: :ok
+  def poweroff, do: :ok
 end
 
 defmodule Nerves.Runtime.KV do

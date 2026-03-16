@@ -187,14 +187,14 @@ var font5x7 = map[rune]glyph{
 	//    #####
 	'I': {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F},
 
-	//    #####
-	//      #
-	//      #
-	//      #
-	//      #
-	//    # #
-	//     #
-	'J': {0x1F, 0x04, 0x04, 0x04, 0x04, 0x0A, 0x04},
+	//     ####
+	//        #
+	//        #
+	//        #
+	//        #
+	//    #   #
+	//     ###
+	'J': {0x0F, 0x01, 0x01, 0x01, 0x01, 0x11, 0x0E},
 
 	//    #   #
 	//    #  #
@@ -777,6 +777,30 @@ func drawStringSmall(m Matrix, x, y int, text string, r, gr, b uint8) int {
 // stringWidthSmall returns the pixel width of text in the 4×5 font.
 func stringWidthSmall(text string) int {
 	return len([]rune(text)) * 5
+}
+
+// drawStringSmallClipped draws text in the 4×5 font but only renders pixels
+// whose x coordinate falls within [clipX0, clipX1). Used for scrolling text.
+func drawStringSmallClipped(m Matrix, x, y int, text string, clipX0, clipX1 int, r, gr, b uint8) {
+	cursor := x
+	for _, ch := range text {
+		gl, ok := font4x5[ch]
+		if !ok {
+			cursor += 5
+			continue
+		}
+		for row := 0; row < 5; row++ {
+			for col := 0; col < 4; col++ {
+				if gl[row]&(0x8>>uint(col)) != 0 {
+					px := cursor + col
+					if px >= clipX0 && px < clipX1 {
+						m.SetPixel(px, y+row, r, gr, b)
+					}
+				}
+			}
+		}
+		cursor += 5
+	}
 }
 
 // ── Airplane Icon (16×16) ───────────────────────────────────────────────────

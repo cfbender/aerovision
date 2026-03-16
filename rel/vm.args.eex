@@ -1,0 +1,13 @@
+## Erlang VM arguments for AeroVision on Nerves
+
+## Node name (not distributed — single node embedded device)
+-sname aerovision
+
+## Cookie for distributed Erlang (not used, but required by OTP)
+-setcookie aerovision_cookie
+
+## Use the interactive shell via IEx on the console UART
+-noshell
+-user elixir
+-run elixir start_cli
+-extra --no-halt

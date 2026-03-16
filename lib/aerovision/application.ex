@@ -5,6 +5,7 @@ defmodule AeroVision.Application do
   Supervision tree for the flight tracking LED display system.
   """
   use Application
+  require Logger
 
   @impl true
   def start(_type, _args) do

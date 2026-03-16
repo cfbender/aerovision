@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 )
 
 // Command represents an inbound IPC command from the Elixir port process.
@@ -30,6 +31,10 @@ type Command struct {
 
 	// qr command
 	Data string `json:"data,omitempty"`
+
+	// ap_screen / connecting_screen commands
+	SSID string `json:"ssid,omitempty"`
+	IP   string `json:"ip,omitempty"`
 
 	// brightness command
 	Value int `json:"value,omitempty"`
@@ -68,8 +73,16 @@ func readMessage(r io.Reader) ([]byte, error) {
 	return buf, nil
 }
 
+// writeMu serialises all writes to the IPC pipe, preventing the length
+// header and payload from being interleaved when multiple goroutines call
+// writeMessage concurrently (e.g. readLoop and drainRefreshRate).
+var writeMu sync.Mutex
+
 // writeMessage writes one length-prefixed JSON message to stdout.
 func writeMessage(w io.Writer, data []byte) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	var lenBuf [4]byte
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
 	if _, err := w.Write(lenBuf[:]); err != nil {

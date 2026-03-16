@@ -52,7 +52,7 @@ defmodule AeroVision.GPIO.Button do
     state = %{
       gpio: nil,
       press_start: nil,
-      last_event: System.monotonic_time(:millisecond) - @debounce_ms * 10
+      last_event: System.monotonic_time(:nanosecond) - @debounce_ms * 1_000_000 * 10
       # Note: last_event and all timing uses milliseconds (matching the timestamp
       # field in {:circuits_gpio, pin, timestamp_ms, value} messages)
     }
@@ -79,12 +79,11 @@ defmodule AeroVision.GPIO.Button do
 
   # Circuits.GPIO sends: {:circuits_gpio, pin, timestamp, value}
   # value=0 → button pressed (active-low), value=1 → released
-  # We use the message timestamp (nanoseconds from Circuits.GPIO, or milliseconds
-  # from tests) converted to milliseconds for press-duration calculations.
-  # This makes the timing testable without real sleeps.
+  # The timestamp is in nanoseconds on real hardware (Circuits.GPIO v2).
+  # We convert to milliseconds for all timing comparisons.
   @impl true
-  def handle_info({:circuits_gpio, _pin, timestamp_ms, value}, state) do
-    now = timestamp_ms
+  def handle_info({:circuits_gpio, _pin, timestamp_ns, value}, state) do
+    now = div(timestamp_ns, 1_000_000)
 
     if now - state.last_event < @debounce_ms do
       # Within debounce window — ignore

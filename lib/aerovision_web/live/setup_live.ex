@@ -28,21 +28,17 @@ defmodule AeroVisionWeb.SetupLive do
 
   @impl true
   def handle_info({:network, :connected, ip}, socket) do
-    if socket.assigns.connecting do
-      # Connection succeeded — redirect to dashboard after a brief delay so the
-      # user can read the success message (the device IP may have changed).
-      {:noreply,
-       socket
-       |> assign(
-         network_mode: :infrastructure,
-         ip: ip,
-         connecting: false,
-         connect_status: {:ok, ip}
-       )
-       |> push_navigate(to: ~p"/")}
-    else
-      {:noreply, assign(socket, network_mode: :infrastructure, ip: ip)}
-    end
+    # NOTE: if we were connecting via AP, the WebSocket likely dropped the moment
+    # the AP shut down and this message will never arrive at the browser. The
+    # "reconnect" banner below handles that case. If it *does* arrive (e.g. already
+    # on infra mode and credentials changed), just update the status.
+    {:noreply,
+     assign(socket,
+       network_mode: :infrastructure,
+       ip: ip,
+       connecting: false,
+       connect_status: {:ok, "Connected! Visit http://aerovision.local to continue."}
+     )}
   end
 
   def handle_info({:network, :ap_mode}, socket) do
@@ -51,14 +47,20 @@ defmodule AeroVisionWeb.SetupLive do
        network_mode: :ap,
        ip: "192.168.24.1",
        connecting: false,
-       connect_status: {:error, "Failed to connect. Returned to setup mode."}
+       connect_status: {:error, "Failed to connect — returned to setup mode."}
      )}
   end
 
   @impl true
-  def handle_info(:do_scan, socket) do
-    networks = AeroVision.Network.Manager.scan_networks()
-    {:noreply, assign(socket, scanning: false, scan_results: networks)}
+  def handle_info({:scan_complete, networks}, socket) do
+    status =
+      if networks == [] do
+        {:info, "No networks found. Make sure you're within range and try again."}
+      else
+        nil
+      end
+
+    {:noreply, assign(socket, scanning: false, scan_results: networks, connect_status: status)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -68,7 +70,13 @@ defmodule AeroVisionWeb.SetupLive do
   @impl true
   def handle_event("scan_networks", _params, socket) do
     if on_target?() do
-      send(self(), :do_scan)
+      lv = self()
+
+      Task.start(fn ->
+        networks = AeroVision.Network.Manager.scan_networks()
+        send(lv, {:scan_complete, networks})
+      end)
+
       {:noreply, assign(socket, scanning: true, scan_results: [])}
     else
       {:noreply,
@@ -99,17 +107,18 @@ defmodule AeroVisionWeb.SetupLive do
     if ssid == "" do
       {:noreply, assign(socket, connect_status: {:error, "Please enter a network name."})}
     else
-      try do
-        AeroVision.Network.Manager.connect_wifi(ssid, password)
-      rescue
-        _ -> nil
-      end
+      AeroVision.Network.Manager.connect_wifi(ssid, password)
 
+      # The AP will shut down as soon as VintageNet switches to infrastructure mode,
+      # which drops this WebSocket connection. Tell the user to reconnect.
       {:noreply,
        assign(socket,
          ssid: ssid,
          connecting: true,
-         connect_status: {:info, "Connecting to #{ssid}…"}
+         connect_status:
+           {:info,
+            "Rebooting to connect to #{ssid}… " <>
+              "Reconnect your device to #{ssid} and visit http://aerovision.local"}
        )}
     end
   end

@@ -24,6 +24,11 @@ defmodule AeroVision.Display.Renderer do
   @pubsub AeroVision.PubSub
   @default_cycle_seconds 8
   @qr_duration_ms 10_000
+  @ap_ssid "AeroVision-Setup"
+  @ap_ip "192.168.24.1"
+
+  # Modes that mean "not connected to WiFi yet" — QR is suppressed in these.
+  @no_wifi_modes [:ap, :connecting, :loading]
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -46,16 +51,32 @@ defmodule AeroVision.Display.Renderer do
 
     cycle_seconds = AeroVision.Config.Store.get(:display_cycle_seconds) || @default_cycle_seconds
 
+    # Start in AP mode immediately if we're not on WiFi yet — avoids briefly
+    # showing the scan animation before the network :ap_mode broadcast arrives.
+    # Guard against Network.Manager not being up yet (e.g. in tests).
+    initial_mode =
+      try do
+        case NetworkManager.current_mode() do
+          :ap -> :ap
+          :connecting -> :connecting
+          _ -> :loading
+        end
+      catch
+        :exit, _ -> :loading
+      end
+
     state = %{
       flights: [],
       current_index: 0,
       cycle_timer: nil,
       qr_timer: nil,
-      mode: :loading,
-      cycle_seconds: cycle_seconds
+      mode: initial_mode,
+      cycle_seconds: cycle_seconds,
+      connecting_ssid: nil,
+      last_command: nil
     }
 
-    render(state)
+    state = render(state)
     {:ok, state}
   end
 
@@ -65,10 +86,12 @@ defmodule AeroVision.Display.Renderer do
   def handle_info({:display_flights, flights}, state) do
     state = %{state | flights: flights}
 
+    prev_mode = state.mode
+
     state =
       cond do
-        # Stay in QR mode if a QR timer is active
-        state.mode == :qr ->
+        # Network-state modes are never overridden by flight data
+        state.mode in [:qr, :ap, :connecting] ->
           state
 
         flights == [] ->
@@ -80,7 +103,16 @@ defmodule AeroVision.Display.Renderer do
           |> ensure_cycle_timer()
       end
 
-    render(state)
+    # Only re-render if the mode changed or new flights arrived in :flights mode.
+    # Avoids restarting the scan animation on every poll when no flights are present.
+    state =
+      if state.mode != prev_mode or state.mode == :flights do
+        Logger.debug("[Display.Renderer] Received #{length(flights)} flights — updating display")
+        render(state)
+      else
+        state
+      end
+
     {:noreply, state}
   end
 
@@ -105,11 +137,39 @@ defmodule AeroVision.Display.Renderer do
     {:noreply, state}
   end
 
-  # --- PubSub: network IP update ----------------------------------------------
+  # --- PubSub: network state changes ------------------------------------------
 
   @impl true
+  def handle_info({:network, :ap_mode}, state) do
+    Logger.info("[Display.Renderer] AP mode — showing setup screen")
+    state = cancel_qr_timer(state)
+    state = %{state | mode: :ap, connecting_ssid: nil}
+    state = render(state)
+    {:noreply, state}
+  end
+
+  def handle_info({:network, :connecting, ssid}, state) do
+    Logger.info("[Display.Renderer] Connecting to #{ssid}")
+    state = cancel_qr_timer(state)
+    state = %{state | mode: :connecting, connecting_ssid: ssid}
+    state = render(state)
+    {:noreply, state}
+  end
+
   def handle_info({:network, :connected, _ip}, state) do
-    # Nothing to do proactively; we'll call current_ip/0 when QR is requested
+    # Connected — clear connecting state, resume normal display
+    state =
+      if state.mode in [:ap, :connecting] do
+        %{
+          state
+          | mode: if(state.flights == [], do: :loading, else: :flights),
+            connecting_ssid: nil
+        }
+      else
+        state
+      end
+
+    state = render(state)
     {:noreply, state}
   end
 
@@ -117,13 +177,17 @@ defmodule AeroVision.Display.Renderer do
     {:noreply, state}
   end
 
-  # --- PubSub: GPIO short press → show QR -------------------------------------
+  # --- PubSub: GPIO short press → show QR (only when WiFi connected) ----------
 
   @impl true
   def handle_info({:button, :short_press}, state) do
-    Logger.info("[Display.Renderer] Short press — showing QR code")
-    state = show_qr(state)
-    {:noreply, state}
+    if state.mode in @no_wifi_modes do
+      Logger.debug("[Display.Renderer] Short press ignored — not connected to WiFi")
+      {:noreply, state}
+    else
+      Logger.info("[Display.Renderer] Short press — showing QR code")
+      {:noreply, show_qr(state)}
+    end
   end
 
   def handle_info({:button, _press}, state) do
@@ -146,7 +210,7 @@ defmodule AeroVision.Display.Renderer do
     next_index = rem(state.current_index + 1, length(state.flights))
     state = %{state | current_index: next_index, cycle_timer: nil}
     state = ensure_cycle_timer(state)
-    render(state)
+    state = render(state)
     {:noreply, state}
   end
 
@@ -160,7 +224,7 @@ defmodule AeroVision.Display.Renderer do
       %{state | mode: if(state.flights == [], do: :loading, else: :flights), qr_timer: nil}
 
     state = ensure_cycle_timer(state)
-    render(state)
+    state = render(state)
     {:noreply, state}
   end
 
@@ -176,29 +240,45 @@ defmodule AeroVision.Display.Renderer do
   # Rendering
   # ---------------------------------------------------------------------------
 
-  defp render(%{mode: :loading}) do
-    Driver.send_command(%{cmd: "scan_anim"})
+  defp render(state) do
+    command = build_command(state)
+
+    cond do
+      command == :noop ->
+        state
+
+      command == state.last_command ->
+        state
+
+      true ->
+        Driver.send_command(command)
+        %{state | last_command: command}
+    end
   end
 
-  defp render(%{mode: :qr}) do
+  defp build_command(%{mode: :loading}), do: %{cmd: "scan_anim"}
+
+  defp build_command(%{mode: :ap}), do: %{cmd: "ap_screen", ssid: @ap_ssid, ip: @ap_ip}
+
+  defp build_command(%{mode: :connecting, connecting_ssid: ssid}),
+    do: %{cmd: "connecting_screen", ssid: ssid || "WiFi"}
+
+  defp build_command(%{mode: :qr}) do
     ip = NetworkManager.current_ip() || "aerovision.local"
     url = "http://#{ip}"
     Logger.debug("[Display.Renderer] Showing QR for #{url}")
-    Driver.send_command(%{cmd: "qr", data: url})
+    %{cmd: "qr", data: url}
   end
 
-  defp render(%{mode: :flights, flights: [], current_index: _}) do
-    # Shouldn't happen, but guard anyway
-    render(%{mode: :loading})
-  end
+  defp build_command(%{mode: :flights, flights: [], current_index: _}),
+    do: build_command(%{mode: :loading})
 
-  defp render(%{mode: :flights, flights: flights, current_index: index}) do
+  defp build_command(%{mode: :flights, flights: flights, current_index: index}) do
     flight = Enum.at(flights, index)
-    command = build_flight_card(flight)
-    Driver.send_command(command)
+    build_flight_card(flight)
   end
 
-  defp render(_state), do: :ok
+  defp build_command(_state), do: :noop
 
   # ---------------------------------------------------------------------------
   # Flight card builder
@@ -286,21 +366,17 @@ defmodule AeroVision.Display.Renderer do
     %{state | cycle_timer: nil}
   end
 
+  defp cancel_qr_timer(%{qr_timer: nil} = state), do: state
+
+  defp cancel_qr_timer(%{qr_timer: ref} = state) do
+    Process.cancel_timer(ref)
+    %{state | qr_timer: nil}
+  end
+
   defp show_qr(state) do
-    # Cancel any existing QR timer
-    state =
-      case state.qr_timer do
-        nil ->
-          state
-
-        ref ->
-          Process.cancel_timer(ref)
-          %{state | qr_timer: nil}
-      end
-
+    state = cancel_qr_timer(state)
     qr_ref = Process.send_after(self(), :qr_end, @qr_duration_ms)
     state = %{state | mode: :qr, qr_timer: qr_ref}
     render(state)
-    state
   end
 end

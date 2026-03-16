@@ -23,7 +23,7 @@ defmodule AeroVision.Network.Manager do
   @interface "wlan0"
   @ap_ssid "AeroVision-Setup"
   @ap_ip "192.168.24.1"
-  @reconnect_timeout_ms 30_000
+  @reconnect_timeout_ms 60_000
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -58,37 +58,86 @@ defmodule AeroVision.Network.Manager do
   end
 
   @doc """
-  Scan for available WiFi networks. Returns a list of maps with `:ssid`, `:signal`, and `:security`.
-  Only works on target; returns `[]` on host.
+  Trigger a WiFi scan and wait for results. Returns a list of maps with
+  `:ssid`, `:signal`, and `:security`. Only works on target; returns `[]` on host.
+
+  VintageNet stores results as a list of `%VintageNetWiFi.AccessPoint{}` structs
+  at `["interface", "wlan0", "wifi", "access_points"]`.
   """
   def scan_networks do
-    if Application.get_env(:aerovision, :target, :host) != :host do
+    if on_target?() do
       try do
-        case VintageNet.get(["interface", "wlan0", "wifi", "access_points"]) do
-          aps when is_map(aps) ->
-            aps
-            |> Enum.map(fn {ssid, info} ->
-              %{
-                ssid: ssid,
-                signal: Map.get(info, :signal_dbm, -80),
-                security:
-                  if(Map.get(info, :flags, []) |> Enum.any?(&(&1 == :wpa2_psk)),
-                    do: "WPA2",
-                    else: "Open"
-                  )
-              }
-            end)
-            |> Enum.sort_by(& &1.signal, :desc)
+        # Subscribe to property changes so we know when scan results arrive.
+        VintageNet.subscribe(["interface", @interface, "wifi", "access_points"])
 
-          _ ->
-            []
-        end
+        # Trigger the scan.
+        VintageNet.scan(@interface)
+
+        # Wait up to 10s for a property update — much more reliable than sleeping.
+        results =
+          receive do
+            {VintageNet, ["interface", @interface, "wifi", "access_points"], _old, aps, _meta}
+            when is_list(aps) ->
+              parse_access_points(aps)
+          after
+            10_000 ->
+              # Timeout — try reading whatever is there already
+              case VintageNet.get(["interface", @interface, "wifi", "access_points"]) do
+                aps when is_list(aps) -> parse_access_points(aps)
+                _ -> []
+              end
+          end
+
+        VintageNet.unsubscribe(["interface", @interface, "wifi", "access_points"])
+        results
       rescue
-        _ -> []
+        e ->
+          Logger.warning("[Network.Manager] scan_networks failed: #{inspect(e)}")
+          []
       end
     else
       []
     end
+  end
+
+  # Parse a list of %VintageNetWiFi.AccessPoint{} structs into plain maps.
+  # Deduplicates by SSID, keeping the strongest signal per SSID.
+  defp parse_access_points(aps) when is_list(aps) do
+    aps
+    |> Enum.filter(&(is_binary(&1.ssid) and &1.ssid != ""))
+    |> Enum.group_by(& &1.ssid)
+    |> Enum.map(fn {ssid, entries} ->
+      best = Enum.max_by(entries, & &1.signal_dbm)
+      flags = best.flags || []
+
+      security =
+        cond do
+          Enum.any?(
+            flags,
+            &(&1 in [
+                :wpa2,
+                :rsn_ccmp,
+                :wpa2_psk_ccmp,
+                :wpa2_sae_ccmp,
+                :wpa2_psk_ccmp_tkip,
+                :wpa2_eap_ccmp
+              ])
+          ) ->
+            "WPA2"
+
+          Enum.any?(flags, &(&1 in [:wpa, :wpa_psk_ccmp, :wpa_psk_ccmp_tkip, :wpa_eap_ccmp])) ->
+            "WPA"
+
+          Enum.member?(flags, :wep) ->
+            "WEP"
+
+          true ->
+            "Open"
+        end
+
+      %{ssid: ssid, signal: best.signal_dbm, security: security}
+    end)
+    |> Enum.sort_by(& &1.signal, :desc)
   end
 
   # ---------------------------------------------------------------------------
@@ -99,9 +148,6 @@ defmodule AeroVision.Network.Manager do
   def init(_opts) do
     # Subscribe to VintageNet connection-state changes
     vintage_net_subscribe(["interface", @interface, "connection"])
-
-    # Subscribe to config store changes (WiFi credential updates)
-    AeroVision.Config.Store.subscribe()
 
     ssid = AeroVision.Config.Store.get(:wifi_ssid)
     password = AeroVision.Config.Store.get(:wifi_password)
@@ -141,9 +187,20 @@ defmodule AeroVision.Network.Manager do
     AeroVision.Config.Store.put(:wifi_password, password)
 
     state = cancel_reconnect_timer(state)
-    configure_infrastructure(ssid, password)
 
-    {:reply, :ok, %{state | mode: :infrastructure, ssid: ssid}}
+    Phoenix.PubSub.broadcast(@pubsub, @topic, {:network, :connecting, ssid})
+
+    # The brcmfmac driver on the Pi Zero 2 W cannot reliably switch from AP
+    # mode to station mode at runtime. VintageNet persists the config to disk,
+    # so a reboot picks it up cleanly. Schedule a reboot after a short delay
+    # to let the UI update and the response reach the browser.
+    if on_target?() do
+      Process.send_after(self(), :reboot_for_wifi, 3_000)
+    else
+      configure_infrastructure(ssid, password)
+    end
+
+    {:reply, :ok, %{state | mode: :connecting, ssid: ssid}}
   end
 
   # --- Asynchronous casts ------------------------------------------------------
@@ -171,27 +228,19 @@ defmodule AeroVision.Network.Manager do
     {:noreply, state}
   end
 
-  # Config-store change: WiFi SSID or password updated externally
-  @impl true
-  def handle_info({:config_changed, key, _value}, state)
-      when key in [:wifi_ssid, :wifi_password] do
-    Logger.info("[Network.Manager] WiFi credentials changed (#{key}) — reconnecting")
-
-    ssid = AeroVision.Config.Store.get(:wifi_ssid)
-    password = AeroVision.Config.Store.get(:wifi_password)
-
-    if credentials_present?(ssid, password) do
-      state = cancel_reconnect_timer(state)
-      configure_infrastructure(ssid, password)
-      {:noreply, %{state | mode: :infrastructure, ssid: ssid}}
-    else
-      {:noreply, state}
-    end
-  end
-
-  # Ignore other config changes
+  # Ignore config store changes — WiFi connections are initiated explicitly via
+  # connect_wifi/2, never automatically on credential saves. This prevents the
+  # AP from being torn down when credentials are written during the setup wizard.
   @impl true
   def handle_info({:config_changed, _key, _value}, state) do
+    {:noreply, state}
+  end
+
+  # Reboot to cleanly apply new WiFi credentials (brcmfmac AP→STA workaround)
+  @impl true
+  def handle_info(:reboot_for_wifi, state) do
+    Logger.info("[Network.Manager] Rebooting to apply WiFi config for SSID: #{state.ssid}")
+    Nerves.Runtime.reboot()
     {:noreply, state}
   end
 
@@ -265,16 +314,28 @@ defmodule AeroVision.Network.Manager do
   defp handle_connection_change(:internet, state) do
     Logger.info("[Network.Manager] Connected to internet")
     state = cancel_reconnect_timer(state)
-    ip = fetch_ip()
-    broadcast_connected(ip)
+
+    # Only broadcast :connected when transitioning from an infrastructure/connecting
+    # mode — not when we're in AP mode (where VintageNet also reports :internet/:lan
+    # because the DHCP server is running on the AP interface).
+    if state.mode in [:infrastructure, :connecting, :disconnected] do
+      ip = fetch_ip()
+      broadcast_connected(ip)
+    end
+
     %{state | mode: :infrastructure}
   end
 
   defp handle_connection_change(:lan, state) do
     Logger.info("[Network.Manager] Connected to LAN (no internet)")
     state = cancel_reconnect_timer(state)
-    ip = fetch_ip()
-    broadcast_connected(ip)
+
+    # Guard: don't broadcast :connected for AP mode's own LAN connection.
+    if state.mode in [:infrastructure, :connecting, :disconnected] do
+      ip = fetch_ip()
+      broadcast_connected(ip)
+    end
+
     %{state | mode: :infrastructure}
   end
 

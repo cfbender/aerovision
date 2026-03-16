@@ -272,6 +272,17 @@ defmodule AeroVisionWeb.SettingsLive do
     {:noreply, socket}
   end
 
+  def handle_event("shutdown", _params, socket) do
+    if on_target?() do
+      spawn(fn ->
+        Process.sleep(500)
+        Nerves.Runtime.poweroff()
+      end)
+    end
+
+    {:noreply, socket}
+  end
+
   def handle_event("dismiss_flash", _params, socket) do
     {:noreply, assign(socket, saved_flash: nil)}
   end
@@ -808,18 +819,25 @@ defmodule AeroVisionWeb.SettingsLive do
               <.info_row label="Uptime" value={@uptime} />
             </div>
 
-            <div class="pt-2 border-t border-gray-800">
+            <div class="pt-2 border-t border-gray-800 flex items-center gap-3 flex-wrap">
               <button
                 phx-click="reboot"
                 data-confirm="Reboot the device?"
                 class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-200 text-sm font-medium rounded-md border border-red-700 transition-colors"
               >
-                Reboot Device
+                Reboot
               </button>
-              <p class="text-xs text-gray-600 mt-2">
+              <button
+                phx-click="shutdown"
+                data-confirm="Shut down the device? You will need to physically power cycle it to turn it back on."
+                class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-md border border-gray-700 transition-colors"
+              >
+                Shut Down
+              </button>
+              <p class="text-xs text-gray-600 w-full mt-1">
                 {if on_target?(),
-                  do: "Reboots the Raspberry Pi.",
-                  else: "Reboot disabled in development mode."}
+                  do: "Reboot restarts the Pi. Shut Down powers it off safely.",
+                  else: "System controls disabled in development mode."}
               </p>
             </div>
           </div>

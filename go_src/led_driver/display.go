@@ -34,7 +34,7 @@ func (d *Display) stopAnim() {
 	d.animMu.Unlock()
 	if ch != nil {
 		close(ch)
-		// Give the goroutine a moment to paint its final clear frame
+		// Give the goroutine a moment to exit cleanly
 		time.Sleep(20 * time.Millisecond)
 	}
 }
@@ -64,6 +64,12 @@ func (d *Display) HandleCommand(cmd Command) {
 	case "scan_anim":
 		d.renderScanAnim()
 		sendResponse("ok", "")
+	case "ap_screen":
+		d.renderAPScreen(cmd)
+		sendResponse("ok", "")
+	case "connecting_screen":
+		d.renderConnectingScreen(cmd)
+		sendResponse("ok", "")
 	case "ping":
 		sendResponse("ok", "")
 	default:
@@ -80,8 +86,8 @@ func (d *Display) renderFlightCard(cmd Command) {
 	// UPPER CARD — 5×7 font, logo + 3 text rows with 4px gaps
 	// ══════════════════════════════════════════════════════════════════════
 
-	// ── Airline logo (16×16) at (2, 2) ───────────────────────────────────
-	drawPlaneIcon(d.matrix, 2, 2)
+	// ── Airline logo (16×16) at (0, 12) ──────────────────────────────────
+	drawPlaneIcon(d.matrix, 0, 12)
 
 	// ── Flight number at (20, 2) — white ─────────────────────────────────
 	if cmd.Flight != "" {
@@ -315,12 +321,70 @@ func randomPass() animPass {
 	}
 }
 
+// renderConnectingScreen shows a "Connecting to <SSID>" message while
+// VintageNet is associating with a new WiFi network.
+func (d *Display) renderConnectingScreen(cmd Command) {
+	d.matrix.Clear()
+
+	cyan := [3]uint8{0, 200, 220}
+	white := [3]uint8{255, 255, 255}
+	gray := [3]uint8{120, 120, 120}
+
+	drawStringSmall(d.matrix, 2, 8, "Connecting to:", gray[0], gray[1], gray[2])
+
+	ssid := cmd.SSID
+	if ssid == "" {
+		ssid = "WiFi"
+	}
+
+	// Center the SSID; split at hyphen if too wide
+	ssidWidth := stringWidthSmall(ssid)
+	if ssidWidth <= 60 {
+		x := (64 - ssidWidth) / 2
+		drawStringSmall(d.matrix, x, 22, ssid, white[0], white[1], white[2])
+	} else {
+		line1, line2 := ssid, ""
+		for i, ch := range ssid {
+			if ch == '-' && i > 0 {
+				line1 = ssid[:i]
+				line2 = ssid[i:]
+				break
+			}
+		}
+		w1 := stringWidthSmall(line1)
+		drawStringSmall(d.matrix, (64-w1)/2, 18, line1, white[0], white[1], white[2])
+		if line2 != "" {
+			w2 := stringWidthSmall(line2)
+			drawStringSmall(d.matrix, (64-w2)/2, 26, line2, white[0], white[1], white[2])
+		}
+	}
+
+	// Divider
+	for x := 2; x <= 61; x++ {
+		d.matrix.SetPixel(x, 36, 40, 40, 40)
+	}
+
+	drawStringSmall(d.matrix, 2, 42, "This page will", gray[0], gray[1], gray[2])
+	drawStringSmall(d.matrix, 2, 49, "disconnect.", gray[0], gray[1], gray[2])
+	drawStringSmall(d.matrix, 2, 56, "aerovision.local", cyan[0], cyan[1], cyan[2])
+
+	d.matrix.Render()
+}
+
 // renderScanAnim starts a looping animation: the plane flies across the
 // display on a random diagonal heading, with a new random direction and
 // entry position chosen on each pass. The sprite is rotated to always
 // face the direction of travel. Runs until the next command cancels it.
+//
+// If the animation is already running this is a no-op — the existing
+// goroutine continues uninterrupted, avoiding a disruptive restart.
 func (d *Display) renderScanAnim() {
-	d.stopAnim()
+	d.animMu.Lock()
+	already := d.animStop != nil
+	d.animMu.Unlock()
+	if already {
+		return
+	}
 
 	stop := make(chan struct{})
 	d.animMu.Lock()
@@ -342,8 +406,6 @@ func (d *Display) renderScanAnim() {
 		for {
 			select {
 			case <-stop:
-				d.matrix.Clear()
-				d.matrix.Render()
 				return
 			case <-ticker.C:
 				t := float64(step) / float64(steps)
@@ -378,6 +440,131 @@ func (d *Display) renderScanAnim() {
 				if step > steps {
 					step = 0
 					pass = randomPass()
+				}
+			}
+		}
+	}()
+}
+
+// renderAPScreen displays the WiFi setup screen when in AP mode.
+// Static content fills the top half; the URL scrolls on the bottom half.
+func (d *Display) renderAPScreen(cmd Command) {
+	cyan := [3]uint8{0, 200, 220}
+	white := [3]uint8{255, 255, 255}
+	gray := [3]uint8{120, 120, 120}
+	yellow := [3]uint8{255, 200, 0}
+
+	ssid := cmd.SSID
+	if ssid == "" {
+		ssid = "AeroVision-Setup"
+	}
+	ip := cmd.IP
+	if ip == "" {
+		ip = "192.168.24.1"
+	}
+	url := "http://" + ip
+
+	// drawStatic renders everything except the scrolling URL row.
+	drawStatic := func(scrollX int) {
+		d.matrix.Clear()
+
+		// Header
+		drawStringSmall(d.matrix, 2, 2, "CONNECT TO:", cyan[0], cyan[1], cyan[2])
+
+		// SSID — split at hyphen if too wide
+		ssidWidth := stringWidthSmall(ssid)
+		if ssidWidth <= 60 {
+			drawStringSmall(d.matrix, (64-ssidWidth)/2, 14, ssid, yellow[0], yellow[1], yellow[2])
+		} else {
+			line1, line2 := ssid, ""
+			for i, ch := range ssid {
+				if ch == '-' && i > 0 {
+					line1 = ssid[:i]
+					line2 = ssid[i:]
+					break
+				}
+			}
+			w1 := stringWidthSmall(line1)
+			drawStringSmall(d.matrix, (64-w1)/2, 10, line1, yellow[0], yellow[1], yellow[2])
+			if line2 != "" {
+				w2 := stringWidthSmall(line2)
+				drawStringSmall(d.matrix, (64-w2)/2, 17, line2, yellow[0], yellow[1], yellow[2])
+			}
+		}
+
+		// Divider
+		for x := 2; x <= 61; x++ {
+			d.matrix.SetPixel(x, 27, 40, 40, 40)
+		}
+
+		// "Open browser:" label
+		drawStringSmall(d.matrix, 2, 32, "Open browser:", gray[0], gray[1], gray[2])
+
+		// Scrolling URL — clipped to display width
+		drawStringSmallClipped(d.matrix, scrollX, 42, url, 0, 64, white[0], white[1], white[2])
+
+		// "No password" note
+		drawStringSmall(d.matrix, 2, 54, "No password", gray[0], gray[1], gray[2])
+
+		d.matrix.Render()
+	}
+
+	urlWidth := stringWidthSmall(url)
+
+	// If the URL fits, just draw it statically and return.
+	if urlWidth <= 60 {
+		drawStatic((64 - urlWidth) / 2)
+		return
+	}
+
+	// URL is too wide — scroll it. The animation goroutine handles this.
+	d.stopAnim()
+
+	stop := make(chan struct{})
+	d.animMu.Lock()
+	d.animStop = stop
+	d.animMu.Unlock()
+
+	go func() {
+		// Scroll: starts fully off the right edge, moves left until fully off left.
+		// Then pauses briefly and loops.
+		const (
+			frameMs = 50   // ~20fps scroll
+			pauseMs = 1000 // pause at start before scrolling
+		)
+		startX := 64
+		endX := -(urlWidth + 4)
+
+		ticker := time.NewTicker(frameMs * time.Millisecond)
+		defer ticker.Stop()
+
+		scrollX := startX
+		pausing := true
+		pauseFrames := pauseMs / frameMs
+
+		for {
+			select {
+			case <-stop:
+				d.matrix.Clear()
+				d.matrix.Render()
+				return
+			case <-ticker.C:
+				if pausing {
+					drawStatic(startX)
+					pauseFrames--
+					if pauseFrames <= 0 {
+						pausing = false
+					}
+					continue
+				}
+
+				drawStatic(scrollX)
+				scrollX--
+
+				if scrollX < endX {
+					scrollX = startX
+					pausing = true
+					pauseFrames = pauseMs / frameMs
 				}
 			}
 		}

@@ -16,7 +16,11 @@ defmodule AeroVision.MixProject do
       releases: [{@app, release()}],
       aliases: aliases(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader],
+      listeners:
+        if(System.get_env("MIX_TARGET") in [nil, "", "host"],
+          do: [Phoenix.CodeReloader],
+          else: []
+        ),
       elixirc_paths: elixirc_paths(Mix.env()),
       test_coverage: [
         summary: [threshold: 60],
@@ -46,8 +50,8 @@ defmodule AeroVision.MixProject do
   defp elixirc_paths(_), do: host_paths()
 
   defp host_paths do
-    if Mix.target() == :host do
-      ["lib", "lib/stubs"]
+    if System.get_env("MIX_TARGET") in [nil, "", "host"] do
+      ["lib", "host_stubs"]
     else
       ["lib"]
     end
@@ -73,9 +77,10 @@ defmodule AeroVision.MixProject do
       {:toolshed, "~> 0.4", targets: @all_targets},
       {:nerves_runtime, "~> 0.13", targets: @all_targets},
       {:nerves_pack, "~> 0.7", targets: @all_targets},
+      {:nerves_ssh, "~> 1.3", targets: @all_targets},
 
       # Nerves system — only built for the rpi0_2 target
-      {:nerves_system_rpi0_2, "~> 1.24", runtime: false, targets: :rpi0_2},
+      {:nerves_system_rpi0_2, "~> 1.33", runtime: false, targets: :rpi0_2},
 
       # Phoenix web stack
       {:phoenix, "~> 1.8.5"},

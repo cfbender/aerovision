@@ -89,7 +89,7 @@ The panel also has its own power screw terminals. When using the SEENGREAT HAT f
 
 A push button provides two hardware shortcuts:
 
-- **Short press** (<1 second): Display a QR code with the device's IP address on the LED panel for 10 seconds
+- **Short press** (<1 second): Display a QR code with the device's IP address on the LED panel for 10 seconds. Only works when connected to WiFi.
 - **Long press** (≥3 seconds): Force the device back into AP/setup mode
 
 Wiring:
@@ -191,6 +191,41 @@ Visit **[http://localhost:4000](http://localhost:4000)** — the setup wizard wi
 
 > **Note**: In development mode, WiFi management (VintageNet) is disabled. The WiFi step of the setup wizard can be skipped.
 
+### Configuration via Environment Variables
+
+All settings can be seeded from a `.env` file in the project root at **build time** — values are compiled into the firmware so no file needs to be copied to the device. Values are only applied if the setting hasn't already been saved through the UI — manual changes always take precedence.
+
+```bash
+# API Keys (required for flight data)
+OPENSKY_CLIENT_ID=your_client_id
+OPENSKY_CLIENT_SECRET=your_client_secret
+AEROAPI_KEY=your_aeroapi_key           # optional enrichment
+
+# WiFi — pre-configuring these skips the setup wizard on first boot
+WIFI_SSID=MyHomeNetwork
+WIFI_PASSWORD=mysecretpassword
+
+# Location
+LOCATION_LAT=35.7721
+LOCATION_LON=-78.63861
+RADIUS_MI=25                           # miles  (takes priority over RADIUS_KM)
+RADIUS_KM=40.234                       # km     (used if RADIUS_MI is not set)
+
+# Display
+DISPLAY_BRIGHTNESS=80                  # 1–100
+DISPLAY_CYCLE_SECONDS=8                # seconds per flight card
+DISPLAY_MODE=nearby                    # nearby | tracked
+
+# Flight filters
+POLL_INTERVAL_SEC=15
+UNITS=imperial                         # imperial | metric
+TRACKED_FLIGHTS=AAL123,DAL456          # comma-separated callsigns
+AIRLINE_FILTERS=AAL,DAL                # comma-separated ICAO operator codes
+AIRPORT_FILTERS=RDU,CLT                # comma-separated IATA/ICAO codes
+```
+
+Place the `.env` file in the project root before running `mix firmware`. The values are read at build time by `config/config.exs` and baked into the firmware image — the device reads them from application config at startup, not from any file on disk.
+
 ### Terminal Display Preview
 
 Preview exactly what the LED panel will show, rendered in your terminal using ANSI true color and Unicode half-block characters:
@@ -200,28 +235,9 @@ Preview exactly what the LED panel will show, rendered in your terminal using AN
 ./priv/led_driver --demo
 ```
 
-Output looks like:
-```
-AeroVision 64×64 Preview
-┌────────────────────────────────────────────────────────────────┐
-│  ████  AA 1234                                                 │
-│  █  █  B738                                                    │
-│  ████  RDU▸SLC                                                 │
-│────────────────────────────────────────────────────────────────│
-│  FL350                                              450KT      │
-│  045°                                                -500      │
-│  14:30                                              18:45      │
-│  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░         │
-└────────────────────────────────────────────────────────────────┘
- Brightness: 80%  Press Ctrl+C to exit
-```
+### Live Preview in the Browser
 
-You can also pipe JSON commands to the binary for testing:
-
-```bash
-echo '{"cmd":"flight_card","flight":"UA 456","aircraft":"A321","route_origin":"SFO","route_dest":"ORD","altitude_ft":37000,"speed_kt":510,"bearing_deg":90,"progress":0.31}' \
-  | ./priv/led_driver --preview
-```
+When the server is running, visit **[http://localhost:4000/preview](http://localhost:4000/preview)** to see a live 64×64 pixel grid that mirrors exactly what the LED panel is rendering, updated in real time via WebSocket. This also works on the real device at `http://aerovision.local/preview`.
 
 ---
 
@@ -242,7 +258,7 @@ brew install fwup
 sudo apt install fwup
 ```
 
-For the Go cross-compilation, you'll need the ARM toolchain:
+For the Go cross-compilation, you'll need the ARM C/C++ toolchain:
 
 ```bash
 # macOS
@@ -252,40 +268,25 @@ brew install arm-linux-gnueabihf-binutils
 sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 ```
 
-### Step 1: Build the rpi-rgb-led-matrix C Library for ARM
+### Step 1: Build the Go LED Driver for ARM
 
-The Go LED driver links against the `hzeller/rpi-rgb-led-matrix` C++ library. You need to cross-compile it for ARM first:
-
-```bash
-# Clone the library
-git clone https://github.com/hzeller/rpi-rgb-led-matrix.git /tmp/rpi-rgb-led-matrix
-cd /tmp/rpi-rgb-led-matrix
-
-# Cross-compile the static library for ARMv7
-make CC=arm-linux-gnueabihf-gcc CXX=arm-linux-gnueabihf-g++ \
-     CXXFLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard" \
-     lib/librgbmatrix.a
-
-# Create the directory structure the Makefile expects
-sudo mkdir -p /opt/rpi-rgb-led-matrix/lib /opt/rpi-rgb-led-matrix/include
-sudo cp lib/librgbmatrix.a /opt/rpi-rgb-led-matrix/lib/
-sudo cp include/*.h /opt/rpi-rgb-led-matrix/include/
-```
-
-### Step 2: Build the Go LED Driver for ARM
+The Makefile handles everything — it automatically clones and compiles the `hzeller/rpi-rgb-led-matrix` C library using the Nerves-bundled aarch64 toolchain (already downloaded when you ran `mix deps.get`), then cross-compiles the Go binary:
 
 ```bash
 cd go_src
-RPI_RGB_LIB=/opt/rpi-rgb-led-matrix make build-arm
+make build-arm
 ```
 
-This produces `priv/led_driver` — the ARM binary that will be included in the Nerves firmware image.
+This produces `priv/led_driver` — the ARM binary included in the Nerves firmware image. The C library source is downloaded into `go_src/.hzeller/` (gitignored) on first run. No manual library installation required.
 
-### Step 3: Build the Nerves Firmware
+### Step 2: Build the Nerves Firmware
+
+Create a `.env` file in the project root with your settings (see [Configuration via Environment Variables](#configuration-via-environment-variables)), then:
 
 ```bash
 # Set the target to Raspberry Pi Zero 2 W
 export MIX_TARGET=rpi0_2
+export MIX_ENV=prod
 
 # Fetch target-specific dependencies
 mix deps.get
@@ -294,31 +295,23 @@ mix deps.get
 mix firmware
 ```
 
-This produces `_build/rpi0_2_dev/nerves/images/aerovision.fw`.
+This produces `_build/rpi0_2_prod/nerves/images/aerovision.fw`.
 
-### Step 4: Flash to SD Card
-
-Insert your microSD card and run:
+### Step 3: Flash to SD Card
 
 ```bash
-mix firmware.burn
+# macOS — replace diskN with your SD card device (check with `diskutil list`)
+sudo fwup -a -i _build/rpi0_2_prod/nerves/images/aerovision.fw -d /dev/diskN -t complete
 ```
 
-Mix will detect available drives and ask you to confirm. **Double-check the drive path before confirming** — flashing the wrong drive will erase it.
-
-Alternatively, use `fwup` directly:
-
-```bash
-fwup _build/rpi0_2_dev/nerves/images/aerovision.fw
-```
+> ⚠️ **Double-check the device path** — flashing the wrong disk will erase it permanently.
 
 ### Over-the-Air Updates (OTA)
 
 After the first flash, you can push updates over WiFi without removing the SD card:
 
 ```bash
-export MIX_TARGET=rpi0_2
-mix firmware
+MIX_TARGET=rpi0_2 MIX_ENV=prod mix firmware
 mix upload aerovision.local
 ```
 
@@ -334,47 +327,61 @@ Insert the flashed SD card into the Pi, connect the SEENGREAT HAT (with panel an
 
 Boot takes approximately **30–60 seconds** on first power-on.
 
+If you pre-configured `WIFI_SSID` and `WIFI_PASSWORD` in your `.env` before building, the device will connect automatically on first boot — no setup wizard needed.
+
 ### Step 2: Connect to the Setup Network
 
-Since no WiFi credentials are configured yet, the device starts in **AP mode**:
+If no WiFi credentials are configured, the device starts in **AP mode** and shows the connection instructions on the LED panel:
 
 1. On your phone or laptop, open WiFi settings
 2. Connect to the network: **`AeroVision-Setup`** (open network, no password)
 3. Your device will be assigned an IP in the `192.168.24.x` range
 
+The LED panel displays the SSID and URL (`http://192.168.24.1`) while in AP mode. If the URL is too long to fit, it scrolls across the panel.
+
 ### Step 3: Open the Setup Wizard
 
 Navigate to **[http://192.168.24.1](http://192.168.24.1)** in your browser.
 
-The setup wizard walks you through three steps:
+The setup wizard walks you through three steps. **The device stays in AP mode for the entire wizard** — WiFi connection is deferred until you finish all steps, so you won't lose your browser session mid-setup.
 
 **Step 1 — WiFi**
-Enter your home network SSID and password. The device will connect and the AP network will disappear. You may be redirected automatically; if not, connect your device back to your home WiFi and navigate to **[http://aerovision.local](http://aerovision.local)**.
+Tap **Scan** to find nearby networks, or type your SSID manually. Enter your password and tap **Save & Continue**. The credentials are saved immediately but the connection doesn't happen yet.
 
 **Step 2 — API Keys**
 Enter your OpenSky Client ID and Secret (required) and optionally your FlightAware AeroAPI key. See the [API Keys](#api-keys) section above for how to obtain these.
 
 **Step 3 — Location**
-Enter your latitude, longitude, and a search radius in kilometers. AeroVision will scan for all flights within this radius of your location. Default: Raleigh, NC (35.78, -78.64), 50km radius.
+Enter your latitude, longitude, and search radius. AeroVision will scan for all flights within this radius of your location.
 
 > **Tip**: Use [latlong.net](https://www.latlong.net/) or Google Maps (right-click → "What's here?") to find your coordinates.
 
-After completing setup, the LED panel will begin displaying live flight data within 15–30 seconds.
+After completing setup, the device reboots to apply the WiFi configuration (a limitation of the Pi Zero 2 W's WiFi driver). Reconnect your laptop/phone to your home WiFi and navigate to **[http://aerovision.local](http://aerovision.local)**. Flight data will begin appearing within 15–30 seconds.
+
+### Display States
+
+| State | What you see on the panel |
+|-------|--------------------------|
+| **AP / Setup mode** | "CONNECT TO: AeroVision-Setup" with scrolling URL |
+| **Connecting to WiFi** | "Connecting to `<SSID>`…" with `aerovision.local` reminder |
+| **Scanning for flights** | Animated top-down airplane sprite flying across the display in a random direction |
+| **Flight data** | Full flight card cycling through nearby flights |
+| **QR code** | Device IP as a scannable QR code (short button press, WiFi connected only) |
 
 ### Physical Button Usage
 
 | Press | Action |
 |-------|--------|
-| **Short press** (<1 second) | Show QR code with device IP on the LED panel for 10 seconds |
+| **Short press** (<1 second) | Show QR code with device IP on the LED panel for 10 seconds (only when connected to WiFi) |
 | **Long press** (≥3 seconds) | Force device back into AP/setup mode |
 
-The QR code is useful when the device's IP address changes (e.g., after a router restart) and you can't reach `aerovision.local`.
+The QR code is useful when the device's IP address changes and you can't reach `aerovision.local`.
 
 ---
 
 ## Configuration
 
-All settings are accessible at **[http://aerovision.local/settings](http://aerovision.local/settings)**. Settings are persisted to the device's writable `/data` partition and survive firmware updates and reboots.
+All settings are accessible at **[http://aerovision.local/settings](http://aerovision.local/settings)**. Settings are stored in a JSON file at `/data/aerovision/config/settings.json` on the device's writable partition. The file is written atomically (write-then-rename), so settings survive unexpected power loss and firmware updates.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -384,12 +391,17 @@ All settings are accessible at **[http://aerovision.local/settings](http://aerov
 | **Display Mode** | Nearby | `Nearby` = all flights in radius; `Tracked` = specific callsigns only |
 | **Tracked Flights** | (empty) | Callsigns to monitor in Tracked mode (e.g., `AAL123`) |
 | **Airline Filters** | (empty) | Filter Nearby mode by ICAO operator prefix (e.g., `AAL` for American Airlines) |
+| **Airport Filters** | (empty) | Filter by origin or destination IATA/ICAO code (e.g., `RDU`) |
 | **Brightness** | 80% | LED panel brightness (1–100) |
 | **Cycle Interval** | 8 seconds | How long each flight is displayed before cycling |
+| **Poll Interval** | 15 seconds | How often to check for new flights |
+| **Units** | Imperial | `Imperial` (ft, kt, mi) or `Metric` (m, km/h, km) |
 | **OpenSky Client ID** | (none) | OAuth2 client ID from opensky-network.org |
 | **OpenSky Client Secret** | (none) | OAuth2 client secret from opensky-network.org |
 | **AeroAPI Key** | (none) | FlightAware AeroAPI key (optional enrichment) |
 | **WiFi SSID** | (none) | Home network name |
+
+The Settings page also includes **Reboot** and **Shut Down** buttons under the System section. Shut Down powers off the Pi safely — you will need to physically unplug and replug the power to turn it back on.
 
 ### Finding Airline ICAO Codes
 
@@ -417,13 +429,14 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 │                    Nerves (Linux on Pi)                      │
 │                                                             │
 │  AeroVision.Application (OTP Supervisor)                    │
-│    ├── Config.Store          CubDB on /data partition       │
+│    ├── Config.Store          JSON file on /data partition   │
 │    ├── Network.Manager       WiFi + AP fallback (VintageNet)│
-│    ├── Flight.AeroAPI        FlightAware enrichment cache   │
+│    ├── Flight.AeroAPI        FlightAware enrichment + cache │
 │    ├── Flight.OpenSky        ADS-B poller (15s interval)    │
 │    ├── Flight.Tracker        State aggregation + filtering  │
 │    ├── Display.Driver        Go port manager (packet:4)     │
-│    ├── Display.Renderer      Frame builder (64×64 layout)   │
+│    ├── Display.Renderer      Frame builder + display modes  │
+│    ├── Display.PreviewServer Pixel relay for /preview page  │
 │    ├── GPIO.Button           Physical button handler        │
 │    └── AeroVisionWeb.Endpoint  Phoenix + LiveView on :80    │
 │                                       │                     │
@@ -439,13 +452,27 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 **Data flow**:
 1. `OpenSky` polls the OpenSky Network API every 15 seconds, filtering by bounding box
 2. `Tracker` merges new state vectors with enriched data from `AeroAPI`
-3. `Renderer` builds a `flight_card` JSON command and sends it to `Driver`
-4. `Driver` forwards the command to the Go binary via stdin (4-byte length-prefixed)
-5. The Go binary renders the flight card onto the LED matrix
+3. `Renderer` builds display commands and sends them to `Driver`
+4. `Driver` forwards commands to the Go binary via stdin (4-byte length-prefixed JSON)
+5. The Go binary renders to the LED matrix using double-buffered vsync swaps
 
-**Web UI**: The Phoenix LiveView app subscribes to PubSub topics and updates in real time as flights change. No page refresh needed.
+**Display commands**:
+- `flight_card` — renders a full flight information card
+- `scan_anim` — starts the idle scanning animation (goroutine, looping)
+- `ap_screen` — WiFi setup help screen with scrolling URL
+- `connecting_screen` — "Connecting to `<SSID>`…" screen
+- `qr` — QR code display
+- `brightness` — adjusts panel brightness
 
-For full technical details, see [CLAUDE.md](CLAUDE.md).
+**Rendering**: The Go binary uses hzeller's double-buffering API (`led_matrix_create_offscreen_canvas` + `led_matrix_swap_on_vsync`). All drawing happens on an invisible offscreen canvas; `Render()` swaps it to the display atomically at vsync, eliminating flicker from the clear→draw cycle.
+
+**Idle animation**: When no flights are in range, the `scan_anim` goroutine flies a 16×16 top-down airplane sprite across the display. Each pass picks a random cardinal diagonal (NE/SE/SW/NW) and entry position. The sprite is pre-rotated at startup into all 4 orientations using pixel-level rotation of the NE master sprite. The animation goroutine checks if it's already running before starting — sending `scan_anim` repeatedly (e.g. on each OpenSky poll) does not restart or interrupt the animation.
+
+**Settings storage**: Configuration is written atomically to `settings.json` using write-then-rename. A crash mid-write leaves the previous file untouched. Flight enrichment data (AeroAPI responses) is cached separately in CubDB — cache loss on a bad shutdown is harmless.
+
+**Build-time config injection**: `config/config.exs` reads `.env` at `mix firmware` time and compiles the values into the firmware as application config (`Application.get_env(:aerovision, :env_seeds)`). The device reads from application config at startup — no file I/O needed on the device.
+
+For full technical details, see [AGENTS.md](AGENTS.md).
 
 ---
 
@@ -457,35 +484,44 @@ For full technical details, see [CLAUDE.md](CLAUDE.md).
 - Confirm the SEENGREAT HAT is fully seated on the Pi's 40-pin GPIO header
 - Try a different power supply — cheap supplies often can't sustain 4A
 
-### LED panel shows garbage / flickering pixels
-- Add `--led-slowdown-gpio=2` (or higher) to slow down GPIO switching for slower Pi models
-- Verify audio is disabled: check that `dtparam=audio=off` is in `/boot/config.txt` (it should be set by the Nerves rootfs overlay)
-- Try `--led-no-hardware-pulse` if not already set (it is by default for the SEENGREAT HAT)
+### LED panel flickers
+The Pi Zero 2 W (BCM2710A1) toggles GPIO faster than some panels' shift registers can track. The firmware is already tuned for this with `--led-slowdown-gpio=2` and `--led-limit-refresh=100`, but if you still see flicker:
+- Try increasing `slowdown_gpio` to 3 or 4 in `config/rpi0_2.exs` and rebuilding
+- Reduce `limit_refresh_hz` to 80 or 60 for more consistent timing under load
+- Verify the power supply is adequate — voltage sag under load causes display instability
 
 ### No flights appearing on the display
 1. Check that your OpenSky credentials are entered correctly in Settings
 2. Verify your location is set correctly — the default is Raleigh, NC
 3. Try increasing the radius (e.g., 100km for rural areas)
 4. Check if OpenSky is up: `curl "https://opensky-network.org/api/states/all?lamin=35&lomin=-79&lamax=36&lomax=-77"` from a terminal
-5. In IEx on the device: `AeroVision.Flight.OpenSky.fetch_now()`
 
-### Can't connect to aerovision.local
-- mDNS/Bonjour must be enabled on your laptop. macOS has this by default. On Windows, install [Bonjour for Windows](https://support.apple.com/kb/DL999).
-- On Linux: `sudo apt install avahi-daemon`
-- Alternatively, short-press the physical button to show the QR code with the direct IP address on the LED panel
+### WiFi setup wizard drops connection during scan
+This was a known issue where saving WiFi credentials would immediately trigger a reconnect, dropping the AP. It's fixed — credentials are saved but the actual connection is deferred until you complete all wizard steps.
 
-### WiFi won't connect / device won't appear on network
+### WiFi won't connect / device won't appear on network after setup
+The Pi Zero 2 W's brcmfmac WiFi driver cannot switch from AP mode to station mode at runtime without a reboot. After completing the setup wizard, the device automatically reboots to apply the WiFi configuration. This is expected behaviour — wait for the reboot (10–15 seconds), then reconnect your laptop to your home WiFi and navigate to `http://aerovision.local`.
+
+If it still won't connect after reboot:
 - Long-press the physical button (≥3 seconds) to force AP mode
 - Connect to `AeroVision-Setup` and reconfigure WiFi at `http://192.168.24.1`
-- Double-check that the SSID and password are correct (case-sensitive)
+- Double-check SSID and password (case-sensitive)
 
-### Web UI is slow / unresponsive
-The Pi Zero 2 W has a 1GHz quad-core ARM Cortex-A53 CPU and 512MB RAM. The web UI should be responsive for configuration. If it's very slow, the device may be under memory pressure — try reducing the OpenSky poll radius to limit the number of flights being tracked.
+### Settings reset after reboot
+Settings are stored at `/data/aerovision/config/settings.json`. If this file is missing or unreadable, defaults are used. Check that the `/data` partition is mounted and writable. The file is never wiped by a firmware update — only a factory reset (`Config.Store.reset()` in IEx) clears it.
+
+### Can't connect to aerovision.local
+- mDNS/Bonjour must be enabled. macOS has this by default. On Windows, install [Bonjour for Windows](https://support.apple.com/kb/DL999). On Linux: `sudo apt install avahi-daemon`
+- Short-press the physical button to show the QR code with the direct IP address on the LED panel
+- Check your router's DHCP client list for a device named `aerovision`
+
+### Preview page not working
+The `/preview` page works on both host and the real device. On the device, a separate `led_driver` process is spawned with `--preview-pixels` (software rendering only, no GPIO access) and relays pixel data to the browser via WebSocket. If the preview is blank, check that the `led_driver` binary exists at `priv/led_driver` in the firmware.
 
 ### OTA update fails
 - Ensure the device and your laptop are on the same network
 - Try using the IP address directly: `mix upload 192.168.1.x` instead of `aerovision.local`
-- SSH into the device to check available space: `nerves_ssh` or via `mix ssh`
+- SSH into the device: `ssh nerves.local` or `ssh 192.168.1.x`
 
 ---
 
@@ -496,42 +532,49 @@ aerovision/
 ├── lib/
 │   ├── aerovision/
 │   │   ├── application.ex        # OTP supervision tree
-│   │   ├── config/store.ex       # CubDB persistent config
+│   │   ├── db.ex                 # CubDB wrapper (AeroAPI enrichment cache)
+│   │   ├── config/store.ex       # Atomic JSON settings, build-time env seeding
 │   │   ├── network/manager.ex    # WiFi + AP mode (VintageNet)
 │   │   ├── flight/
 │   │   │   ├── opensky.ex        # OpenSky ADS-B poller
-│   │   │   ├── aero_api.ex       # FlightAware enrichment
-│   │   │   ├── tracker.ex        # State aggregation
+│   │   │   ├── aero_api.ex       # FlightAware enrichment + CubDB cache
+│   │   │   ├── tracker.ex        # State aggregation + filtering
 │   │   │   └── geo_utils.ex      # Haversine, unit conversion
 │   │   ├── display/
-│   │   │   ├── driver.ex         # Go Port manager
-│   │   │   └── renderer.ex       # Flight card frame builder
-│   │   └── gpio/button.ex        # Physical button handler
-│   └── aerovision_web/
-│       └── live/
-│           ├── dashboard_live.ex # Flight dashboard + setup wizard
-│           ├── settings_live.ex  # Full configuration UI
-│           └── setup_live.ex     # WiFi-only setup page
+│   │   │   ├── driver.ex         # Go Port manager, PubSub relay
+│   │   │   ├── renderer.ex       # Display mode state machine
+│   │   │   └── preview_server.ex # Software pixel relay for /preview
+│   │   └── gpio/button.ex        # Physical button (nanosecond timestamps)
+│   ├── aerovision_web/
+│   │   └── live/
+│   │       ├── dashboard_live.ex # Flight dashboard + deferred-connect setup wizard
+│   │       ├── settings_live.ex  # Full configuration UI + reboot/shutdown
+│   │       ├── setup_live.ex     # WiFi-only setup page
+│   │       └── preview_live.ex   # Live 64×64 pixel grid preview
+│   └── host_stubs/
+│       └── target_stubs.ex       # Circuits.GPIO, VintageNet, Nerves stubs (host only)
 ├── go_src/
-│   ├── Makefile
+│   ├── Makefile                  # Auto-downloads hzeller lib, uses Nerves toolchain
 │   └── led_driver/
-│       ├── main.go               # Entry point, flags, demo mode
+│       ├── main.go               # Entry point; --preview-pixels uses SoftwareMatrix
 │       ├── matrix.go             # Matrix interface
-│       ├── matrix_real.go        # hzeller rpi-rgb-led-matrix (target)
-│       ├── matrix_stub.go        # Silent stub (emulator)
-│       ├── matrix_term.go        # ANSI terminal preview (emulator)
+│       ├── matrix_real.go        # hzeller double-buffered hardware (target)
+│       ├── matrix_software.go    # In-memory software renderer (preview, all targets)
+│       ├── matrix_stub.go        # Silent stub (emulator builds)
+│       ├── matrix_term.go        # ANSI terminal preview (emulator builds)
 │       ├── protocol.go           # 4-byte length-prefixed JSON IPC
-│       ├── display.go            # 64×64 flight card rendering
-│       ├── fonts.go              # 5×7 and 4×5 bitmap fonts
+│       ├── display.go            # All rendering: flight card, animations, screens
+│       ├── fonts.go              # 5×7 and 4×5 bitmap fonts, plane sprite, clipped draw
 │       └── qrcode.go             # QR code generation
 ├── config/
-│   ├── config.exs                # Shared configuration
-│   ├── dev.exs                   # Development overrides
-│   ├── host.exs                  # Host (non-Nerves) overrides
-│   └── rpi0_2.exs                # Nerves target configuration
+│   ├── config.exs                # Shared config + build-time .env injection
+│   ├── dev.exs                   # Dev overrides (host-only code reloader etc.)
+│   ├── host.exs                  # Host (non-Nerves) endpoint config
+│   ├── prod.exs                  # Production config
+│   └── rpi0_2.exs                # Nerves target: GPIO slowdown, refresh rate cap
 ├── assets/
-│   ├── js/app.js                 # Phoenix LiveView JS entrypoint
-│   ├── css/app.css               # Tailwind v4 CSS
+│   ├── js/app.js                 # Phoenix LiveView JS + PixelGrid hook
+│   ├── css/app.css               # Tailwind v4
 │   └── vendor/                   # topbar, heroicons plugin
 ├── rootfs_overlay/               # Files overlaid onto the Nerves root FS
 └── priv/

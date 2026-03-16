@@ -6,19 +6,21 @@ defmodule AeroVision.GPIO.ButtonTest do
 
   # ── helpers ────────────────────────────────────────────────────────────────
 
-  # Send a GPIO interrupt with an explicit timestamp (milliseconds).
-  # The Button handler now uses the message timestamp directly, so we can
-  # fully control timing without real sleeps.
-  defp gpio_event(pid, value, ts_ms) do
-    send(pid, {:circuits_gpio, 26, ts_ms, value})
+  # Send a GPIO interrupt with an explicit timestamp in nanoseconds,
+  # matching what Circuits.GPIO v2 sends on real hardware.
+  defp gpio_event(pid, value, ts_ns) do
+    send(pid, {:circuits_gpio, 26, ts_ns, value})
     # Sync: wait for GenServer to process the message
     :sys.get_state(pid)
   end
 
+  # Convert a millisecond offset to nanoseconds for use in gpio_event.
+  defp ms_to_ns(ms), do: ms * 1_000_000
+
   defp press_and_release(pid, held_ms) do
-    now = System.monotonic_time(:millisecond)
+    now = System.monotonic_time(:nanosecond)
     gpio_event(pid, 0, now)
-    gpio_event(pid, 1, now + held_ms)
+    gpio_event(pid, 1, now + ms_to_ns(held_ms))
   end
 
   # ── setup ──────────────────────────────────────────────────────────────────
@@ -118,7 +120,7 @@ defmodule AeroVision.GPIO.ButtonTest do
 
   test "release event with no prior press produces no broadcast and no crash" do
     pid = GenServer.whereis(Button)
-    now = System.monotonic_time(:millisecond)
+    now = System.monotonic_time(:nanosecond)
     gpio_event(pid, 1, now)
     refute_receive {:button, _}, 50
     assert Process.alive?(pid)
@@ -128,16 +130,16 @@ defmodule AeroVision.GPIO.ButtonTest do
 
   test "second event within 50ms debounce window is ignored" do
     pid = GenServer.whereis(Button)
-    now = System.monotonic_time(:millisecond)
+    now = System.monotonic_time(:nanosecond)
 
     # First press at t=now — sets last_event
     gpio_event(pid, 0, now)
 
     # Second press 10ms later — within the 50ms debounce window, should be ignored
-    gpio_event(pid, 0, now + 10)
+    gpio_event(pid, 0, now + ms_to_ns(10))
 
     # Release 100ms after first press — clears debounce, produces one short press
-    gpio_event(pid, 1, now + 100)
+    gpio_event(pid, 1, now + ms_to_ns(100))
 
     assert_receive {:button, :short_press}
     refute_receive {:button, _}, 50
@@ -145,16 +147,16 @@ defmodule AeroVision.GPIO.ButtonTest do
 
   test "events more than 50ms apart are each processed" do
     pid = GenServer.whereis(Button)
-    now = System.monotonic_time(:millisecond)
+    now = System.monotonic_time(:nanosecond)
 
     # First press-release cycle
     gpio_event(pid, 0, now)
-    gpio_event(pid, 1, now + 100)
+    gpio_event(pid, 1, now + ms_to_ns(100))
     assert_receive {:button, :short_press}
 
     # Second press-release cycle starting 200ms after the first press
-    gpio_event(pid, 0, now + 200)
-    gpio_event(pid, 1, now + 300)
+    gpio_event(pid, 0, now + ms_to_ns(200))
+    gpio_event(pid, 1, now + ms_to_ns(300))
     assert_receive {:button, :short_press}
   end
 
@@ -171,18 +173,18 @@ defmodule AeroVision.GPIO.ButtonTest do
 
   test "three sequential short presses each produce a broadcast" do
     pid = GenServer.whereis(Button)
-    now = System.monotonic_time(:millisecond)
+    now = System.monotonic_time(:nanosecond)
 
     gpio_event(pid, 0, now)
-    gpio_event(pid, 1, now + 100)
+    gpio_event(pid, 1, now + ms_to_ns(100))
     assert_receive {:button, :short_press}
 
-    gpio_event(pid, 0, now + 200)
-    gpio_event(pid, 1, now + 300)
+    gpio_event(pid, 0, now + ms_to_ns(200))
+    gpio_event(pid, 1, now + ms_to_ns(300))
     assert_receive {:button, :short_press}
 
-    gpio_event(pid, 0, now + 400)
-    gpio_event(pid, 1, now + 500)
+    gpio_event(pid, 0, now + ms_to_ns(400))
+    gpio_event(pid, 1, now + ms_to_ns(500))
     assert_receive {:button, :short_press}
   end
 end

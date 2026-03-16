@@ -98,11 +98,11 @@ defmodule AeroVision.Network.ManagerTest do
     assert result == :ok
   end
 
-  test "connect_wifi/2 switches mode to :infrastructure" do
+  test "connect_wifi/2 switches mode to :connecting" do
     # Start in AP mode (no credentials)
     assert Manager.current_mode() == :ap
     Manager.connect_wifi("TestSSID", "password123")
-    assert Manager.current_mode() == :infrastructure
+    assert Manager.current_mode() == :connecting
   end
 
   # ── force_ap_mode/0 ─────────────────────────────────────────────────────────
@@ -113,12 +113,11 @@ defmodule AeroVision.Network.ManagerTest do
   end
 
   test "force_ap_mode/0 switches mode to :ap" do
-    # First connect so we're in infrastructure
+    # First trigger a connecting state
     Manager.connect_wifi("TestSSID", "pass123")
-    assert Manager.current_mode() == :infrastructure
+    assert Manager.current_mode() == :connecting
 
     Manager.force_ap_mode()
-    # Sync with GenServer via a call
     _ = Manager.current_mode()
     assert Manager.current_mode() == :ap
   end
@@ -132,7 +131,7 @@ defmodule AeroVision.Network.ManagerTest do
     end
 
     Manager.connect_wifi("TestSSID", "pass123")
-    # Drain any network messages from connect_wifi
+    # Drain :connecting broadcast
     receive do
       {:network, _} -> :ok
     after
@@ -152,20 +151,21 @@ defmodule AeroVision.Network.ManagerTest do
 
   # ── config_changed messages ─────────────────────────────────────────────────
 
-  test "{:config_changed, :wifi_ssid, ...} with password set triggers reconnect" do
-    # Store both credentials so Manager reads them when the config change fires
+  test "{:config_changed, ...} messages are ignored — connections are explicit only" do
+    # Saving credentials to the store must NOT trigger an automatic connection,
+    # as that would tear down the AP during the setup wizard.
     Store.put(:wifi_ssid, "NewSSID")
     Store.put(:wifi_password, "secret123")
-    # Simulate the config change broadcast that the store would emit
+
     Phoenix.PubSub.broadcast(
       AeroVision.PubSub,
       "config",
       {:config_changed, :wifi_ssid, "NewSSID"}
     )
 
-    # Give the GenServer time to process
     _ = Manager.current_mode()
-    assert Manager.current_mode() == :infrastructure
+    # Mode unchanged — still :ap, not :infrastructure or :connecting
+    assert Manager.current_mode() == :ap
   end
 
   test "{:config_changed, :wifi_ssid, \"\"} with no password does not crash" do
@@ -201,18 +201,28 @@ defmodule AeroVision.Network.ManagerTest do
   end
 
   test ":internet connection event broadcasts {:network, :connected, ip}" do
-    # Drain init broadcast
+    # Drain any init broadcast
     receive do
-      {:network, :ap_mode} -> :ok
+      {:network, _} -> :ok
     after
       100 -> :ok
     end
 
     pid = GenServer.whereis(Manager)
+
+    # Must be in :connecting mode for the :internet event to broadcast :connected.
+    # Simulate: connect_wifi sets mode to :connecting.
+    Manager.connect_wifi("TestSSID", "pass")
+
+    receive do
+      {:network, :connecting, _} -> :ok
+    after
+      100 -> :ok
+    end
+
     send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
 
     assert_receive {:network, :connected, ip}
-    # On host, ip is "127.0.0.1"
     assert is_binary(ip)
   end
 

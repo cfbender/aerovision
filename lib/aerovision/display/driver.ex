@@ -11,17 +11,10 @@ defmodule AeroVision.Display.Driver do
   `alive?/0` returns `false`. This lets the application run on a development
   host without hardware.
 
-  ## Health check
-  A `{"cmd":"ping"}` command is sent every 30 seconds. If no response arrives
-  within 5 seconds, a warning is logged (but no automatic restart is triggered —
-  the supervisor handles that when the port actually exits).
   """
 
   use GenServer
   require Logger
-
-  @ping_interval_ms 30_000
-  @ping_timeout_ms 5_000
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -78,7 +71,12 @@ defmodule AeroVision.Display.Driver do
     }
 
     if alive do
-      schedule_ping()
+      # Disable the Linux RT scheduler throttle after the hzeller library
+      # has initialized. hzeller's DisableRealtimeThrottling() writes 990000
+      # during NewMatrix(), which throttles the refresh thread for 10ms every
+      # second causing a visible blink. We override it to -1 (no throttle)
+      # after a short delay to ensure the library has finished init.
+      Process.send_after(self(), :disable_rt_throttle, 2_000)
     end
 
     {:ok, state}
@@ -137,9 +135,15 @@ defmodule AeroVision.Display.Driver do
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     case Jason.decode(data) do
       {:ok, response} ->
-        # Only log non-ok responses to avoid terminal spam on every render
-        if Map.get(response, "status") not in ["ok", "frame"] do
-          Logger.debug("[Display.Driver] Response from led_driver: #{inspect(response)}")
+        case Map.get(response, "status") do
+          status when status in ["ok", "frame"] ->
+            :ok
+
+          "refresh_rate" ->
+            Logger.info("[Display.Driver] Refresh rate: #{Map.get(response, "hz")} Hz")
+
+          _other ->
+            Logger.debug("[Display.Driver] Response from led_driver: #{inspect(response)}")
         end
 
         state = maybe_resolve_pending_call(response, state)
@@ -160,22 +164,20 @@ defmodule AeroVision.Display.Driver do
     {:stop, {:port_exited, status}, %{state | port: nil, alive: false}}
   end
 
-  # --- Health-check ping -------------------------------------------------------
+  # --- RT throttle disable -----------------------------------------------------
 
-  def handle_info(:ping, %{alive: false} = state) do
-    {:noreply, state}
-  end
+  @impl true
+  def handle_info(:disable_rt_throttle, state) do
+    case File.write("/proc/sys/kernel/sched_rt_runtime_us", "-1") do
+      :ok ->
+        Logger.info("[Display.Driver] Disabled RT scheduler throttle (sched_rt_runtime_us = -1)")
 
-  def handle_info(:ping, state) do
-    send_to_port(state.port, %{cmd: "ping"})
-    Process.send_after(self(), :ping_timeout, @ping_timeout_ms)
-    schedule_ping()
-    {:noreply, state}
-  end
+      {:error, reason} ->
+        Logger.warning(
+          "[Display.Driver] Could not disable RT scheduler throttle: #{inspect(reason)}"
+        )
+    end
 
-  def handle_info(:ping_timeout, state) do
-    # We don't track whether a pong arrived; just log a warning.
-    Logger.warning("[Display.Driver] Ping timeout — led_driver may be unresponsive")
     {:noreply, state}
   end
 
@@ -201,17 +203,29 @@ defmodule AeroVision.Display.Driver do
     brightness = Keyword.get(display_cfg, :brightness, 80)
     gpio_mapping = Keyword.get(display_cfg, :gpio_mapping, "regular")
     slowdown = Keyword.get(display_cfg, :slowdown_gpio, 1)
+    limit_refresh = Keyword.get(display_cfg, :limit_refresh_hz, 0)
+    no_hw_pulse = Keyword.get(display_cfg, :no_hardware_pulse, true)
+    pwm_bits = Keyword.get(display_cfg, :pwm_bits, 11)
+    pwm_lsb_ns = Keyword.get(display_cfg, :pwm_lsb_nanoseconds, 130)
+    pwm_dither_bits = Keyword.get(display_cfg, :pwm_dither_bits, 0)
+    show_refresh = Keyword.get(display_cfg, :show_refresh_rate, false)
 
-    args = [
-      "--led-rows=#{rows}",
-      "--led-cols=#{cols}",
-      "--led-chain=#{chain}",
-      "--led-parallel=#{parallel}",
-      "--led-brightness=#{brightness}",
-      "--led-gpio-mapping=#{gpio_mapping}",
-      "--led-no-hardware-pulse",
-      "--led-slowdown-gpio=#{slowdown}"
-    ]
+    args =
+      [
+        "--led-rows=#{rows}",
+        "--led-cols=#{cols}",
+        "--led-chain=#{chain}",
+        "--led-parallel=#{parallel}",
+        "--led-brightness=#{brightness}",
+        "--led-gpio-mapping=#{gpio_mapping}",
+        "--led-slowdown-gpio=#{slowdown}",
+        "--led-pwm-bits=#{pwm_bits}",
+        "--led-pwm-lsb-nanoseconds=#{pwm_lsb_ns}",
+        "--led-pwm-dither-bits=#{pwm_dither_bits}"
+      ] ++
+        if(no_hw_pulse, do: ["--led-no-hardware-pulse"], else: []) ++
+        if(limit_refresh > 0, do: ["--led-limit-refresh=#{limit_refresh}"], else: []) ++
+        if(show_refresh, do: ["--led-show-refresh"], else: [])
 
     Port.open(
       {:spawn_executable, path},
@@ -245,8 +259,4 @@ defmodule AeroVision.Display.Driver do
   end
 
   defp maybe_resolve_pending_call(_response, state), do: state
-
-  defp schedule_ping do
-    Process.send_after(self(), :ping, @ping_interval_ms)
-  end
 end

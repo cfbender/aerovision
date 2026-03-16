@@ -21,6 +21,7 @@ aerovision-*.tar
 
 # Go
 /go_src/led_driver/led_driver
+/go_src/.hzeller/
 /priv/led_driver
 
 # Environment variables (contains API keys — never commit)
