@@ -291,6 +291,7 @@ defmodule AeroVision.Display.Renderer do
     %{
       cmd: "flight_card",
       airline: airline_name(fi),
+      operator: fi && fi.operator,
       flight: flight_ident(fi, sv),
       aircraft: aircraft_type(fi),
       route_origin: airport_code(fi && fi.origin),

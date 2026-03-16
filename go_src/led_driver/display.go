@@ -86,8 +86,8 @@ func (d *Display) renderFlightCard(cmd Command) {
 	// UPPER CARD — 5×7 font, logo + 3 text rows with 4px gaps
 	// ══════════════════════════════════════════════════════════════════════
 
-	// ── Airline logo (16×16) at (0, 12) ──────────────────────────────────
-	drawPlaneIcon(d.matrix, 0, 12)
+	// ── Airline logo ─────────────────────────────────────────────────────
+	drawAirlineLogo(d.matrix, 2, 12, cmd.Operator)
 
 	// ── Flight number at (20, 2) — white ─────────────────────────────────
 	if cmd.Flight != "" {

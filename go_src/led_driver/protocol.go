@@ -16,6 +16,7 @@ type Command struct {
 
 	// flight_card — unified command for the full 64×64 display
 	Airline      string  `json:"airline,omitempty"`
+	Operator     string  `json:"operator,omitempty"`
 	Flight       string  `json:"flight,omitempty"`
 	Aircraft     string  `json:"aircraft,omitempty"`
 	RouteOrigin  string  `json:"route_origin,omitempty"`
