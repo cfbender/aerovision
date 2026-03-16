@@ -21,11 +21,9 @@ defmodule AeroVision.Config.StoreTest do
     end)
 
     # Subscribe to config changes via the private store's PubSub broadcasts.
-    # Store always broadcasts to AeroVision.PubSub "config" topic regardless
-    # of which instance emits — we subscribe here to catch them.
     Store.subscribe()
 
-    %{store: name}
+    %{store: name, tmp: tmp, pid: pid}
   end
 
   # Helper: call the per-test Store instance by name
@@ -186,49 +184,23 @@ defmodule AeroVision.Config.StoreTest do
 
   # ── persistence ──────────────────────────────────────────────────────────────
 
-  test "values survive stop/restart of the Store process", %{store: store} do
+  test "values survive stop/restart of the Store process", %{store: store, tmp: tmp, pid: pid} do
     put(store, :location_lat, 51.5074)
     put(store, :display_mode, :tracked)
 
-    # Get the data_dir before stopping
-    %{db: db_pid} = :sys.get_state(GenServer.whereis(store))
-    data_dir = CubDB.data_dir(db_pid)
+    # Stop the store — JSON is already flushed to disk on each put
+    ref = Process.monitor(pid)
+    GenServer.stop(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
 
-    # Stop the Store GenServer. CubDB may trap exits and not automatically
-    # terminate, so we stop it explicitly to release the exclusive file lock.
-    store_pid = GenServer.whereis(store)
-    %{db: db_pid} = :sys.get_state(store_pid)
-
-    # Monitor both so we can wait for clean shutdown
-    store_ref = Process.monitor(store_pid)
-    GenServer.stop(store_pid)
-    assert_receive {:DOWN, ^store_ref, :process, ^store_pid, _}, 1000
-
-    # Explicitly stop CubDB if still alive (it may have survived the Store exit)
-    if Process.alive?(db_pid) do
-      db_ref = Process.monitor(db_pid)
-      GenServer.stop(db_pid)
-      assert_receive {:DOWN, ^db_ref, :process, ^db_pid, _}, 1000
-    end
-
-    # Restart on the same data_dir — should load persisted values
+    # Restart on the same data_dir — should load persisted values from JSON
     name2 = :"store_restart_#{System.unique_integer([:positive])}"
-    {:ok, pid2} = GenServer.start_link(Store, [data_dir: data_dir], name: name2)
+    {:ok, pid2} = GenServer.start_link(Store, [data_dir: tmp], name: name2)
 
     assert get(name2, :location_lat) == 51.5074
     assert get(name2, :display_mode) == :tracked
 
-    # Clean up store2
-    %{db: db2_pid} = :sys.get_state(pid2)
-    store2_ref = Process.monitor(pid2)
     GenServer.stop(pid2)
-    assert_receive {:DOWN, ^store2_ref, :process, ^pid2, _}, 1000
-
-    if Process.alive?(db2_pid) do
-      db2_ref = Process.monitor(db2_pid)
-      GenServer.stop(db2_pid)
-      assert_receive {:DOWN, ^db2_ref, :process, ^db2_pid, _}, 1000
-    end
   end
 
   test "reset clears all previously stored values", %{store: store} do
@@ -244,5 +216,54 @@ defmodule AeroVision.Config.StoreTest do
     put(store, :radius_km, 123)
     config = all(store)
     assert config.radius_km == 123
+  end
+
+  test "atom values round-trip through JSON correctly", %{store: store, tmp: tmp, pid: pid} do
+    put(store, :display_mode, :tracked)
+    put(store, :units, :metric)
+
+    ref = Process.monitor(pid)
+    GenServer.stop(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
+
+    name2 = :"store_atom_#{System.unique_integer([:positive])}"
+    {:ok, pid2} = GenServer.start_link(Store, [data_dir: tmp], name: name2)
+
+    assert get(name2, :display_mode) == :tracked
+    assert get(name2, :units) == :metric
+
+    GenServer.stop(pid2)
+  end
+
+  test "JSON file is created on first put", %{store: store, tmp: tmp} do
+    refute File.exists?(Path.join(tmp, "settings.json"))
+    put(store, :location_lat, 1.0)
+    assert File.exists?(Path.join(tmp, "settings.json"))
+  end
+
+  test "unknown keys in JSON file are ignored on load", %{tmp: tmp} do
+    json = Jason.encode!(%{"unknown_key" => "value", "location_lat" => 42.0})
+    File.write!(Path.join(tmp, "settings.json"), json)
+
+    name = :"store_unknown_#{System.unique_integer([:positive])}"
+    {:ok, pid} = GenServer.start_link(Store, [data_dir: tmp], name: name)
+
+    assert get(name, :location_lat) == 42.0
+    # Unknown key doesn't crash and doesn't appear in all/0
+    config = all(name)
+    refute Map.has_key?(config, :unknown_key)
+
+    GenServer.stop(pid)
+  end
+
+  test "corrupt JSON file falls back to defaults", %{tmp: tmp} do
+    File.write!(Path.join(tmp, "settings.json"), "not valid json {{{{")
+
+    name = :"store_corrupt_#{System.unique_integer([:positive])}"
+    {:ok, pid} = GenServer.start_link(Store, [data_dir: tmp], name: name)
+
+    assert get(name, :location_lat) == 35.7721
+
+    GenServer.stop(pid)
   end
 end

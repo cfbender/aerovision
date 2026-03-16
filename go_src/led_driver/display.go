@@ -3,13 +3,18 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
+	"sync"
+	"time"
 )
 
 // Display owns the rendering logic for the 64×64 LED panel.
 type Display struct {
-	matrix Matrix
-	width  int
-	height int
+	matrix   Matrix
+	width    int
+	height   int
+	animStop chan struct{} // non-nil when an animation goroutine is running
+	animMu   sync.Mutex
 }
 
 // NewDisplay creates a Display backed by the given matrix.
@@ -21,8 +26,27 @@ func NewDisplay(matrix Matrix, width, height int) *Display {
 	}
 }
 
+// stopAnim cancels any running animation goroutine and waits for it to exit.
+func (d *Display) stopAnim() {
+	d.animMu.Lock()
+	ch := d.animStop
+	d.animStop = nil
+	d.animMu.Unlock()
+	if ch != nil {
+		close(ch)
+		// Give the goroutine a moment to paint its final clear frame
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // HandleCommand dispatches an inbound Command to the appropriate renderer.
 func (d *Display) HandleCommand(cmd Command) {
+	// Stop any running animation before processing the next command,
+	// unless the next command is itself an animation.
+	if cmd.Cmd != "scan_anim" && cmd.Cmd != "ping" {
+		d.stopAnim()
+	}
+
 	switch cmd.Cmd {
 	case "flight_card":
 		d.renderFlightCard(cmd)
@@ -36,6 +60,11 @@ func (d *Display) HandleCommand(cmd Command) {
 		sendResponse("ok", "")
 	case "brightness":
 		d.setBrightness(cmd)
+		sendResponse("ok", "")
+	case "scan_anim":
+		d.renderScanAnim()
+		sendResponse("ok", "")
+	case "ping":
 		sendResponse("ok", "")
 	default:
 		log.Printf("Unknown command: %q", cmd.Cmd)
@@ -182,6 +211,177 @@ func (d *Display) setBrightness(cmd Command) {
 		v = 100
 	}
 	d.matrix.SetBrightness(v)
+}
+
+// planeSprites holds the 4 rotated variants of the plane icon, one per
+// diagonal heading. Index matches the animDir constants below.
+var planeSprites = buildPlaneSprites()
+
+func buildPlaneSprites() [4][16][16][3]uint8 {
+	const n = 16
+	type icon = [n][n][3]uint8
+	ne := planeIcon // original: nose points NE (top-right)
+
+	rotate90CW := func(src icon) icon {
+		// 90° clockwise: new[col][n-1-row] = old[row][col]
+		// Nose was top-right (row0,col15) → bottom-right (row15,col15) = SE
+		var dst icon
+		for row := 0; row < n; row++ {
+			for col := 0; col < n; col++ {
+				dst[col][n-1-row] = src[row][col]
+			}
+		}
+		return dst
+	}
+
+	rotate90CCW := func(src icon) icon {
+		// 90° counter-clockwise: new[n-1-col][row] = old[row][col]
+		// Nose was top-right (row0,col15) → top-left (row0,col0) = NW
+		var dst icon
+		for row := 0; row < n; row++ {
+			for col := 0; col < n; col++ {
+				dst[n-1-col][row] = src[row][col]
+			}
+		}
+		return dst
+	}
+
+	rotate180 := func(src icon) icon {
+		// 180°: new[n-1-row][n-1-col] = old[row][col]
+		// Nose was top-right (row0,col15) → bottom-left (row15,col0) = SW
+		var dst icon
+		for row := 0; row < n; row++ {
+			for col := 0; col < n; col++ {
+				dst[n-1-row][n-1-col] = src[row][col]
+			}
+		}
+		return dst
+	}
+
+	return [4]icon{
+		ne,              // 0 = NE: dx=+1, dy=-1
+		rotate90CW(ne),  // 1 = SE: dx=+1, dy=+1
+		rotate180(ne),   // 2 = SW: dx=-1, dy=+1
+		rotate90CCW(ne), // 3 = NW: dx=-1, dy=-1
+	}
+}
+
+// drawPlaneSprite draws a rotated plane sprite at (x, y).
+func drawPlaneSprite(m Matrix, x, y, dir int) {
+	sprite := planeSprites[dir]
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 16; col++ {
+			px := sprite[row][col]
+			if px[0] != 0 || px[1] != 0 || px[2] != 0 {
+				m.SetPixel(x+col, y+row, px[0], px[1], px[2])
+			}
+		}
+	}
+}
+
+// animPass holds the parameters for one crossing of the display.
+type animPass struct {
+	startX, startY int // sprite top-left at t=0 (may be off-screen)
+	endX, endY     int // sprite top-left at t=1 (may be off-screen)
+	dir            int // sprite rotation index (0=NE,1=SE,2=SW,3=NW)
+}
+
+// randomPass picks a random diagonal direction and a random starting position
+// along the entry edge, returning a fully-specified animPass.
+func randomPass() animPass {
+	const s = 16 // sprite size
+	dir := rand.Intn(4)
+
+	// For each direction, the plane enters from one pair of edges.
+	// Entry positions are randomised along the entry edge so the plane
+	// crosses somewhere in the middle half of the display (not always corner).
+	switch dir {
+	case 0: // NE: enter bottom-left, exit top-right; dx=+, dy=-
+		// Entry: x off left (-s), y randomised in lower half
+		sy := 32 + rand.Intn(17) // 32..48
+		return animPass{-s, sy, 64, sy - (64 + s), dir}
+	case 1: // SE: enter top-left, exit bottom-right; dx=+, dy=+
+		// Entry: x off left (-s), y randomised in upper half
+		sy := rand.Intn(17) // 0..16
+		return animPass{-s, sy, 64, sy + (64 + s), dir}
+	case 2: // SW: enter top-right, exit bottom-left; dx=-, dy=+
+		// Entry: x off right (64), y randomised in upper half
+		sy := rand.Intn(17) // 0..16
+		return animPass{64, sy, -s, sy + (64 + s), dir}
+	default: // NW: enter bottom-right, exit top-left; dx=-, dy=-
+		// Entry: x off right (64), y randomised in lower half
+		sy := 32 + rand.Intn(17) // 32..48
+		return animPass{64, sy, -s, sy - (64 + s), dir}
+	}
+}
+
+// renderScanAnim starts a looping animation: the plane flies across the
+// display on a random diagonal heading, with a new random direction and
+// entry position chosen on each pass. The sprite is rotated to always
+// face the direction of travel. Runs until the next command cancels it.
+func (d *Display) renderScanAnim() {
+	d.stopAnim()
+
+	stop := make(chan struct{})
+	d.animMu.Lock()
+	d.animStop = stop
+	d.animMu.Unlock()
+
+	go func() {
+		const (
+			steps   = 80 // frames per pass
+			frameMs = 40 // ~25 fps
+		)
+
+		pass := randomPass()
+		step := 0
+
+		ticker := time.NewTicker(frameMs * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				d.matrix.Clear()
+				d.matrix.Render()
+				return
+			case <-ticker.C:
+				t := float64(step) / float64(steps)
+				x := int(float64(pass.startX) + t*float64(pass.endX-pass.startX))
+				y := int(float64(pass.startY) + t*float64(pass.endY-pass.startY))
+
+				d.matrix.Clear()
+
+				// Subtle trail — 3 ghost dots behind the sprite centre
+				trailColors := [][3]uint8{
+					{0, 80, 100},
+					{0, 120, 140},
+					{0, 160, 180},
+				}
+				for i, tc := range trailColors {
+					trailT := t - float64(i+1)*0.06
+					if trailT >= 0 {
+						tx := int(float64(pass.startX) + trailT*float64(pass.endX-pass.startX))
+						ty := int(float64(pass.startY) + trailT*float64(pass.endY-pass.startY))
+						cx := tx + 8
+						cy := ty + 8
+						if cx >= 0 && cx < 64 && cy >= 0 && cy < 64 {
+							d.matrix.SetPixel(cx, cy, tc[0], tc[1], tc[2])
+						}
+					}
+				}
+
+				drawPlaneSprite(d.matrix, x, y, pass.dir)
+				d.matrix.Render()
+
+				step++
+				if step > steps {
+					step = 0
+					pass = randomPass()
+				}
+			}
+		}
+	}()
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────

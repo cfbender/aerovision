@@ -177,13 +177,7 @@ defmodule AeroVision.Display.Renderer do
   # ---------------------------------------------------------------------------
 
   defp render(%{mode: :loading}) do
-    Driver.send_command(%{
-      cmd: "text",
-      x: 10,
-      y: 28,
-      text: "SCANNING...",
-      color: [0, 200, 220]
-    })
+    Driver.send_command(%{cmd: "scan_anim"})
   end
 
   defp render(%{mode: :qr}) do
@@ -296,8 +290,12 @@ defmodule AeroVision.Display.Renderer do
     # Cancel any existing QR timer
     state =
       case state.qr_timer do
-        nil -> state
-        ref -> Process.cancel_timer(ref); %{state | qr_timer: nil}
+        nil ->
+          state
+
+        ref ->
+          Process.cancel_timer(ref)
+          %{state | qr_timer: nil}
       end
 
     qr_ref = Process.send_after(self(), :qr_end, @qr_duration_ms)

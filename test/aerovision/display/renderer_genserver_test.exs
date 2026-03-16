@@ -109,7 +109,7 @@ defmodule AeroVision.Display.RendererGenServerTest do
     # Renderer is in :loading mode — send an empty flights list to trigger
     # another loading render, which calls Driver.send_command
     expect(Driver, :send_command, fn cmd ->
-      assert cmd.cmd == "text"
+      assert cmd.cmd == "scan_anim"
       :ok
     end)
 
@@ -151,11 +151,11 @@ defmodule AeroVision.Display.RendererGenServerTest do
     :sys.get_state(pid)
   end
 
-  test "receiving empty flights calls Driver with text command (scanning)" do
+  test "receiving empty flights calls Driver with scan_anim command" do
     pid = GenServer.whereis(Renderer)
 
     expect(Driver, :send_command, fn cmd ->
-      assert cmd.cmd == "text"
+      assert cmd.cmd == "scan_anim"
       :ok
     end)
 

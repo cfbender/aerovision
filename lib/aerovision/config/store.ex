@@ -1,9 +1,12 @@
 defmodule AeroVision.Config.Store do
   @moduledoc """
-  Persistent key-value configuration store backed by CubDB.
+  Persistent key-value configuration store backed by a JSON file.
 
-  Stores user configuration (WiFi credentials, location, tracked flights,
-  API keys, display settings) on the writable /data partition.
+  Settings are written atomically: the JSON is first written to a `.tmp` file
+  in the same directory, then renamed over the real file. On POSIX systems
+  `rename(2)` is atomic, so a crash mid-write never produces a partial or
+  corrupt settings file — the worst case is that the last change is lost, not
+  that the entire file is unreadable.
 
   Publishes `{:config_changed, key, value}` to the AeroVision.PubSub topic
   "config" whenever a value changes.
@@ -14,6 +17,7 @@ defmodule AeroVision.Config.Store do
 
   @pubsub AeroVision.PubSub
   @topic "config"
+  @file_name "settings.json"
 
   @defaults %{
     wifi_ssid: nil,
@@ -34,7 +38,12 @@ defmodule AeroVision.Config.Store do
     aeroapi_key: nil
   }
 
+  # Keys whose values are atoms (need string→atom conversion on read)
+  @atom_keys [:display_mode, :units]
+
+  # ---------------------------------------------------------------------------
   # Client API
+  # ---------------------------------------------------------------------------
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -65,48 +74,190 @@ defmodule AeroVision.Config.Store do
     Phoenix.PubSub.subscribe(@pubsub, @topic)
   end
 
+  # ---------------------------------------------------------------------------
   # Server callbacks
+  # ---------------------------------------------------------------------------
 
   @impl true
   def init(opts) do
     data_dir = Keyword.get(opts, :data_dir, data_dir())
     File.mkdir_p!(data_dir)
-    db = AeroVision.DB.open(data_dir: data_dir)
-    # Only seed from env on normal startup — skip when a custom data_dir is
-    # provided (e.g. in tests) to avoid polluting isolated test databases.
-    unless Keyword.has_key?(opts, :data_dir) do
-      seed_from_env(db)
-    end
+    file_path = Path.join(data_dir, @file_name)
 
-    {:ok, %{db: db}}
+    stored = load_file(file_path)
+
+    stored =
+      if Keyword.has_key?(opts, :data_dir) do
+        # Custom data_dir means a test-isolated instance — skip .env seeding
+        stored
+      else
+        seed_from_env(stored, file_path)
+      end
+
+    {:ok, %{file_path: file_path, stored: stored}}
   end
 
-  # Seed config values from environment variables (or a .env file) on startup.
-  # Only writes values that aren't already stored — manual Settings changes
-  # always take precedence over .env values.
-  #
-  # Supported env vars:
-  #   OPENSKY_CLIENT_ID     → :opensky_client_id
-  #   OPENSKY_CLIENT_SECRET → :opensky_client_secret
-  #   AEROAPI_KEY           → :aeroapi_key
-  #
-  # The .env file in the project root is parsed in dev/host mode and its
-  # KEY=VALUE pairs are loaded into the process environment before reading.
-  defp seed_from_env(db) do
-    load_dot_env()
+  @impl true
+  def handle_call({:get, key}, _from, %{stored: stored} = state) do
+    value = Map.get(stored, key, Map.get(@defaults, key))
+    {:reply, value, state}
+  end
 
-    [
-      {"OPENSKY_CLIENT_ID", :opensky_client_id},
-      {"OPENSKY_CLIENT_SECRET", :opensky_client_secret},
-      {"AEROAPI_KEY", :aeroapi_key}
-    ]
-    |> Enum.each(fn {env_var, config_key} ->
-      with value when is_binary(value) and value != "" <- System.get_env(env_var),
-           nil <- CubDB.get(db, config_key) do
-        CubDB.put(db, config_key, value)
-        Logger.info("[Config.Store] Seeded #{config_key} from environment")
+  @impl true
+  def handle_call({:put, key, value}, _from, %{file_path: file_path, stored: stored} = state) do
+    stored = Map.put(stored, key, value)
+    write_file(file_path, stored)
+    Phoenix.PubSub.broadcast(@pubsub, @topic, {:config_changed, key, value})
+    Logger.info("Config updated: #{key}")
+    {:reply, :ok, %{state | stored: stored}}
+  end
+
+  @impl true
+  def handle_call(:all, _from, %{stored: stored} = state) do
+    config = Map.merge(@defaults, stored)
+    {:reply, config, state}
+  end
+
+  @impl true
+  def handle_call(:reset, _from, %{file_path: file_path} = state) do
+    write_file(file_path, %{})
+    Phoenix.PubSub.broadcast(@pubsub, @topic, {:config_reset})
+    {:reply, :ok, %{state | stored: %{}}}
+  end
+
+  # ---------------------------------------------------------------------------
+  # File I/O
+  # ---------------------------------------------------------------------------
+
+  # Read and decode the JSON settings file. Returns a map with atom keys.
+  # Returns %{} on any error (missing file, parse error) so defaults are used.
+  defp load_file(path) do
+    case File.read(path) do
+      {:ok, contents} ->
+        case Jason.decode(contents) do
+          {:ok, map} when is_map(map) ->
+            decode_stored(map)
+
+          _ ->
+            Logger.warning("[Config.Store] Could not parse #{path} — using defaults")
+            %{}
+        end
+
+      {:error, :enoent} ->
+        %{}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Config.Store] Could not read #{path}: #{inspect(reason)} — using defaults"
+        )
+
+        %{}
+    end
+  end
+
+  # Atomically write the settings map to disk as JSON.
+  # Write to a .tmp file first, then rename over the real file.
+  defp write_file(path, stored) do
+    tmp = path <> ".tmp"
+
+    case Jason.encode(encode_stored(stored), pretty: true) do
+      {:ok, json} ->
+        case File.write(tmp, json) do
+          :ok ->
+            case File.rename(tmp, path) do
+              :ok ->
+                :ok
+
+              {:error, reason} ->
+                Logger.error(
+                  "[Config.Store] Failed to rename #{tmp} → #{path}: #{inspect(reason)}"
+                )
+            end
+
+          {:error, reason} ->
+            Logger.error("[Config.Store] Failed to write #{tmp}: #{inspect(reason)}")
+        end
+
+      {:error, reason} ->
+        Logger.error("[Config.Store] Failed to encode config to JSON: #{inspect(reason)}")
+    end
+  end
+
+  # Encode stored map for JSON: convert atom values to strings for known keys.
+  defp encode_stored(stored) do
+    stored
+    |> Enum.map(fn {k, v} ->
+      v =
+        cond do
+          is_atom(v) and not is_nil(v) and not is_boolean(v) -> Atom.to_string(v)
+          true -> v
+        end
+
+      {Atom.to_string(k), v}
+    end)
+    |> Map.new()
+  end
+
+  # Decode a JSON-decoded map (string keys, string values) back to atom keys/values.
+  defp decode_stored(map) do
+    map
+    |> Enum.flat_map(fn {k, v} ->
+      case parse_key(k) do
+        nil -> []
+        key -> [{key, decode_value(key, v)}]
       end
     end)
+    |> Map.new()
+  end
+
+  # Only accept keys that are known config keys — ignore anything else.
+  defp parse_key(str) do
+    key = String.to_existing_atom(str)
+    if Map.has_key?(@defaults, key), do: key, else: nil
+  rescue
+    ArgumentError -> nil
+  end
+
+  # Decode a value, restoring atoms for known atom-valued keys.
+  defp decode_value(key, value) when key in @atom_keys and is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> value
+  end
+
+  defp decode_value(_key, value), do: value
+
+  # ---------------------------------------------------------------------------
+  # .env seeding
+  # ---------------------------------------------------------------------------
+
+  # Seed API keys from environment variables on first boot.
+  # Only writes keys that aren't already stored — manual Settings changes
+  # always take precedence over .env values.
+  defp seed_from_env(stored, file_path) do
+    load_dot_env()
+
+    updated =
+      [
+        {"OPENSKY_CLIENT_ID", :opensky_client_id},
+        {"OPENSKY_CLIENT_SECRET", :opensky_client_secret},
+        {"AEROAPI_KEY", :aeroapi_key}
+      ]
+      |> Enum.reduce(stored, fn {env_var, config_key}, acc ->
+        with value when is_binary(value) and value != "" <- System.get_env(env_var),
+             true <- not Map.has_key?(acc, config_key) or is_nil(Map.get(acc, config_key)) do
+          Logger.info("[Config.Store] Seeded #{config_key} from environment")
+          Map.put(acc, config_key, value)
+        else
+          _ -> acc
+        end
+      end)
+
+    if updated != stored do
+      write_file(file_path, updated)
+    end
+
+    updated
   end
 
   # Parse a .env file from the project root and load its KEY=VALUE pairs
@@ -116,13 +267,8 @@ defmodule AeroVision.Config.Store do
     if Application.get_env(:aerovision, :target, :host) in [:host, :test] do
       dot_env_path =
         case Application.get_env(:aerovision, :dot_env_path) do
-          nil ->
-            # Walk up from the app dir to find the project root .env
-            app_dir = File.cwd!()
-            Path.join(app_dir, ".env")
-
-          path ->
-            path
+          nil -> Path.join(File.cwd!(), ".env")
+          path -> path
         end
 
       case File.read(dot_env_path) do
@@ -133,16 +279,14 @@ defmodule AeroVision.Config.Store do
             line = String.trim(line)
 
             cond do
-              # Skip comments and empty lines
               line == "" or String.starts_with?(line, "#") ->
                 :ok
 
-              # KEY=VALUE (uncommented)
               String.contains?(line, "=") ->
                 [key | rest] = String.split(line, "=", parts: 2)
                 key = String.trim(key)
                 value = rest |> Enum.join("=") |> String.trim()
-                # Strip surrounding quotes if present
+
                 value =
                   cond do
                     String.starts_with?(value, "\"") and String.ends_with?(value, "\"") ->
@@ -155,9 +299,7 @@ defmodule AeroVision.Config.Store do
                       value
                   end
 
-                if key != "" and value != "" do
-                  System.put_env(key, value)
-                end
+                if key != "" and value != "", do: System.put_env(key, value)
 
               true ->
                 :ok
@@ -170,47 +312,9 @@ defmodule AeroVision.Config.Store do
     end
   end
 
-  @impl true
-  def handle_call({:get, key}, _from, %{db: db} = state) do
-    value = CubDB.get(db, key, Map.get(@defaults, key))
-    {:reply, value, state}
-  end
-
-  @impl true
-  def handle_call({:put, key, value}, _from, %{db: db} = state) do
-    CubDB.put(db, key, value)
-    Phoenix.PubSub.broadcast(@pubsub, @topic, {:config_changed, key, value})
-    Logger.info("Config updated: #{key}")
-    {:reply, :ok, state}
-  end
-
-  @impl true
-  def handle_call(:all, _from, %{db: db} = state) do
-    stored = safe_select(db)
-    config = Map.merge(@defaults, stored)
-    {:reply, config, state}
-  end
-
-  @impl true
-  def handle_call(:reset, _from, %{db: db} = state) do
-    CubDB.clear(db)
-    Phoenix.PubSub.broadcast(@pubsub, @topic, {:config_reset})
-    {:reply, :ok, state}
-  end
-
-  # CubDB select/2 can fail mid-traversal if the B-tree is in a corrupt or
-  # inconsistent state (e.g. after an interrupted compaction). Return an empty
-  # map on failure so callers fall back to @defaults rather than crashing.
-  defp safe_select(db) do
-    CubDB.select(db) |> Enum.into(%{})
-  rescue
-    _ ->
-      Logger.error(
-        "[Config.Store] CubDB select failed — returning defaults. Consider clearing ~/.aerovision/config."
-      )
-
-      %{}
-  end
+  # ---------------------------------------------------------------------------
+  # Helpers
+  # ---------------------------------------------------------------------------
 
   defp data_dir do
     case Application.get_env(:aerovision, :target, :host) do

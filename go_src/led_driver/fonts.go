@@ -781,119 +781,144 @@ func stringWidthSmall(text string) int {
 
 // ── Airplane Icon (16×16) ───────────────────────────────────────────────────
 
-// planeIcon is a 16×16 side-view airplane silhouette.
+// planeIcon is a 16×16 top-down airplane silhouette pointing toward the
+// upper-right (NE / 45°), matching the ✈ airplane emoji orientation.
 // Each [3]uint8 is {r, g, b}. Zero value means transparent (no pixel drawn).
-// The plane faces right (nose pointing right).
 //
-// Layout sketch (# = filled pixel):
+// Coordinate system: row 0 = top, col 0 = left.
+// Nose at top-right, tail at bottom-left.
+// Wings are perpendicular to the fuselage: one tip goes NW (upper-left),
+// the other goes SE (lower-right).
 //
-//	col:   0123456789ABCDEF
-//	row 0: ................
-//	row 1: ................
-//	row 2: ................
-//	row 3: ................
-//	row 4: .........#......    <- tail fin top
-//	row 5: ........##......    <- tail fin
-//	row 6: .#######.#.....#   <- tail+fuselage+nose highlight
-//	row 7: ##############.#   <- main fuselage + wing upper
-//	row 8: ##############.#   <- main fuselage + wing lower
-//	row 9: .#######.#.....#   <- underside
-//	row10: ........##......    <- lower strake
-//	row11: .........#......    <- engine/pod
-//	row12: ................
-//	row13: ................
-//	row14: ................
-//	row15: ................
+// Layout sketch (# = fuselage, n = nose, W = wing, T = tail):
 //
-// Wings span roughly columns 4–11 on rows 6–9 (wider body).
-// We build this as a literal pixel map for precision.
+//	col:  0123456789ABCDEF
+//	row0: ..............nn   ← nose tip
+//	row1: .....W........##
+//	row2: ....WW.......##.
+//	row3: ...WW.......##..
+//	row4: ....WW.....##...
+//	row5: .........##.....
+//	row6: ........##......
+//	row7: .......##.WW....
+//	row8: ......##..WWW...
+//	row9: .....##...WWWT..   ← SE wing tip, tail fin
+//	rowA: ....##......T...
+//	rowB: ...##...........
+//	rowC: ................
+//	rowD: ................
+//	rowE: ................
+//	rowF: ................
 
 var planeIcon = buildPlaneIcon()
 
 func buildPlaneIcon() [16][16][3]uint8 {
-	const (
-		_ = iota // transparent
-	)
 	type px = [3]uint8
-	// cyan color
-	c := px{0, 200, 220}
-	// dark cyan for depth on fuselage body
-	dc := px{0, 140, 160}
-	// off-white highlight on nose tip
-	hi := px{200, 240, 255}
+
+	// Colors
+	body := px{255, 255, 255} // bright white fuselage
+	wing := px{180, 220, 255} // light blue wings
+	nose := px{230, 245, 255} // bright nose tip
+	tail := px{140, 180, 220} // slightly darker tail surfaces
 
 	var icon [16][16][3]uint8
 
-	// Helper to set a pixel
 	set := func(row, col int, color px) {
 		if row >= 0 && row < 16 && col >= 0 && col < 16 {
 			icon[row][col] = color
 		}
 	}
 
-	// ── Tail fin (vertical stabilizer) ──────────────────────────────────
-	set(4, 2, c)
-	set(5, 2, c)
-	set(5, 3, c)
-
-	// ── Fuselage (horizontal, rows 6-9, cols 1-13) ──────────────────────
-	// Row 6 — top of fuselage
-	for col := 1; col <= 13; col++ {
-		set(6, col, c)
+	// ── Fuselage ─────────────────────────────────────────────────────────
+	// 2px-wide diagonal from nose (top-right) to tail (bottom-left).
+	// Direction vector: row--, col++ (northeast).
+	// The two parallel tracks are offset by (+1,0) from each other.
+	fuselage := [][2]int{
+		// track A (the NW edge of the fuselage strip)
+		{1, 13},
+		{2, 12},
+		{3, 11},
+		{4, 10},
+		{5, 9},
+		{6, 8},
+		{7, 7},
+		{8, 6},
+		{9, 5},
+		{10, 4},
+		// track B (the SE edge, one row below track A)
+		{2, 13},
+		{3, 12},
+		{4, 11},
+		{5, 10},
+		{6, 9},
+		{7, 8},
+		{8, 7},
+		{9, 6},
+		{10, 5},
+		{11, 4},
 	}
-	set(6, 14, hi) // nose highlight upper
-
-	// Row 7 — upper fuselage interior
-	set(7, 0, c)
-	for col := 1; col <= 13; col++ {
-		set(7, col, dc)
-	}
-	set(7, 14, hi) // nose
-	set(7, 15, hi)
-
-	// Row 8 — lower fuselage interior
-	set(8, 0, c)
-	for col := 1; col <= 13; col++ {
-		set(8, col, dc)
-	}
-	set(8, 14, hi) // nose
-	set(8, 15, hi)
-
-	// Row 9 — bottom of fuselage
-	for col := 1; col <= 13; col++ {
-		set(9, col, c)
-	}
-	set(9, 14, hi) // nose highlight lower
-
-	// ── Wings (rows 5-10, centered around col 7-8) ──────────────────────
-	// Upper wing surface (rows 5-6, expanding outward)
-	set(5, 6, c)
-	set(5, 7, c)
-	set(4, 7, c)
-	set(3, 8, c)
-
-	// Lower wing surface
-	set(10, 6, c)
-	set(10, 7, c)
-	set(11, 7, c)
-	set(12, 8, c)
-
-	// Wing span — wide at rows 6-9
-	for col := 4; col <= 11; col++ {
-		set(5, col, c)
-		set(10, col, c)
+	for _, p := range fuselage {
+		set(p[0], p[1], body)
 	}
 
-	// Winglets / tips
-	set(4, 11, c)
-	set(4, 12, c)
-	set(11, 11, c)
-	set(11, 12, c)
+	// Nose tip — brightest pixels at the very front
+	set(0, 14, nose)
+	set(0, 15, nose)
+	set(1, 14, nose)
 
-	// ── Tail horizontal stabilizer ───────────────────────────────────────
-	for col := 1; col <= 4; col++ {
-		set(5, col, c)
-		set(10, col, c)
+	// ── Wings ─────────────────────────────────────────────────────────────
+	// The fuselage runs NE. Wings are perpendicular: they run along the
+	// NW↔SE diagonal (direction ±(row-1,col-1) and ±(row+1,col+1)).
+	//
+	// The fuselage strip is 2px wide:
+	//   Track A (NW edge): {row, 14-row} e.g. {6,8}, {5,9} ...
+	//   Track B (SE edge): {row+1, 14-row} e.g. {7,8}, {6,9} ...
+	//
+	// NW wing branches off track A going further NW (row--, col--).
+	// SE wing branches off track B going further SE (row++, col++).
+	// Neither crosses through the fuselage.
+
+	// NW wing — starts just outside track A at midpoint {5,9}, goes NW
+	nwWing := [][2]int{
+		{5, 7}, // root (just NW of fuselage track A at row5)
+		{4, 6}, // 2nd step
+		{3, 5}, // 3rd step
+		{2, 4}, // tip
+		// parallel row to thicken the wing near root
+		{6, 7},
+		{5, 6},
+		{4, 5},
+	}
+	for _, p := range nwWing {
+		set(p[0], p[1], wing)
+	}
+
+	// SE wing — starts just outside track B at midpoint {7,8}, goes SE
+	seWing := [][2]int{
+		{8, 9},   // root (just SE of fuselage track B at row7)
+		{9, 10},  // 2nd step
+		{10, 11}, // 3rd step
+		{11, 12}, // tip
+		// parallel row to thicken the wing near root
+		{8, 10},
+		{9, 11},
+		{10, 12},
+	}
+	for _, p := range seWing {
+		set(p[0], p[1], wing)
+	}
+
+	// ── Tail stabilizers ──────────────────────────────────────────────────
+	// Short perpendicular stubs attached to the tail end of the fuselage.
+	// Tail end: track A finishes at {10,4}, track B at {11,4}.
+	// NW stub goes NW from track A tail: (row--, col--)
+	// SE stub goes SE from track B tail: (row++, col++)
+	hStab := [][2]int{
+		{9, 3}, {8, 2}, // NW stub — 2 steps NW from {10,4}
+		{12, 5}, {13, 6}, // SE stub — 2 steps SE from {11,4}
+	}
+	for _, p := range hStab {
+		set(p[0], p[1], tail)
 	}
 
 	return icon
