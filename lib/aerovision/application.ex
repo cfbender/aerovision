@@ -24,6 +24,9 @@ defmodule AeroVision.Application do
     Supervisor.start_link(children, opts)
   end
 
+  # In test mode, start only the bare minimum — tests manage their own processes.
+  defp target_children(:test), do: []
+
   defp target_children(:host) do
     [
       # Network manager (safe on host — VintageNet calls are no-ops)

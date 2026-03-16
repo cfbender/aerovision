@@ -1,5 +1,10 @@
 import Config
 
+# Override the target to :test so the application supervisor only starts the
+# bare minimum (PubSub, Config.Store, Telemetry). Tests manage flight pipeline
+# processes themselves via start_supervised!.
+config :aerovision, target: :test
+
 config :aerovision, AeroVisionWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base:

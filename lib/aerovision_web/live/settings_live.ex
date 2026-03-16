@@ -313,7 +313,7 @@ defmodule AeroVisionWeb.SettingsLive do
                 max="300"
                 step="1"
                 class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="31"
+                placeholder="25"
               />
             </div>
             <.save_button />

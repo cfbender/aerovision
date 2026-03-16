@@ -45,10 +45,16 @@ defmodule AeroVision.GPIO.Button do
   def init(opts) do
     pin = Keyword.get(opts, :pin, @default_pin)
 
+    # Initialize last_event far enough in the past so the very first real GPIO
+    # interrupt is never incorrectly debounced. Monotonic time on some systems
+    # (including macOS) is a large negative integer, so `0` is NOT a safe
+    # sentinel value — `now - 0` could be negative and therefore < @debounce_ms.
     state = %{
       gpio: nil,
       press_start: nil,
-      last_event: 0
+      last_event: System.monotonic_time(:millisecond) - @debounce_ms * 10
+      # Note: last_event and all timing uses milliseconds (matching the timestamp
+      # field in {:circuits_gpio, pin, timestamp_ms, value} messages)
     }
 
     case open_gpio(pin) do
@@ -73,9 +79,12 @@ defmodule AeroVision.GPIO.Button do
 
   # Circuits.GPIO sends: {:circuits_gpio, pin, timestamp, value}
   # value=0 → button pressed (active-low), value=1 → released
+  # We use the message timestamp (nanoseconds from Circuits.GPIO, or milliseconds
+  # from tests) converted to milliseconds for press-duration calculations.
+  # This makes the timing testable without real sleeps.
   @impl true
-  def handle_info({:circuits_gpio, _pin, _timestamp, value}, state) do
-    now = System.monotonic_time(:millisecond)
+  def handle_info({:circuits_gpio, _pin, timestamp_ms, value}, state) do
+    now = timestamp_ms
 
     if now - state.last_event < @debounce_ms do
       # Within debounce window — ignore
@@ -168,8 +177,6 @@ defmodule AeroVision.GPIO.Button do
   end
 
   defp circuits_gpio_available? do
-    Code.ensure_loaded?(Circuits.GPIO)
-  rescue
-    _ -> false
+    Application.get_env(:aerovision, :target, :host) not in [:host, :test]
   end
 end

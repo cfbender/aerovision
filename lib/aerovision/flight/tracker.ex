@@ -52,26 +52,41 @@ defmodule AeroVision.Flight.Tracker do
   # ───────────────────────────────────────────────────────────── callbacks ──
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     Phoenix.PubSub.subscribe(@pubsub, @flights_topic)
     Phoenix.PubSub.subscribe(@pubsub, @config_topic)
 
     data_dir =
-      if Application.get_env(:aerovision, :target, :host) == :host do
-        Path.join(System.user_home!(), ".aerovision/tracker_cache")
-      else
-        "/data/aerovision/tracker_cache"
-      end
+      Keyword.get(opts, :data_dir) ||
+        case Application.get_env(:aerovision, :target, :host) do
+          target when target in [:host, :test] ->
+            Path.join(System.user_home!(), ".aerovision/tracker_cache")
+
+          _ ->
+            "/data/aerovision/tracker_cache"
+        end
 
     File.mkdir_p!(data_dir)
 
+    # Use a named CubDB only when no custom data_dir was provided (i.e. normal
+    # startup). In tests, each test passes its own data_dir and we must NOT
+    # share the named table or subsequent start_supervised! calls would get the
+    # old process back via :already_started.
+    db_base_opts =
+      if Keyword.has_key?(opts, :data_dir) do
+        [data_dir: data_dir]
+      else
+        [data_dir: data_dir, name: :aerovision_tracker_cache]
+      end
+
     db =
       AeroVision.DB.open(
-        data_dir: data_dir,
-        name: :aerovision_tracker_cache,
-        # Compact aggressively — we write one key repeatedly every 15s,
-        # so the append-only file accumulates dirt quickly.
-        auto_compact: {10, 0.3}
+        db_base_opts ++
+          [
+            # Compact aggressively — we write one key repeatedly every 15s,
+            # so the append-only file accumulates dirt quickly.
+            auto_compact: {10, 0.3}
+          ]
       )
 
     # Restore last known flights from cache
@@ -246,6 +261,7 @@ defmodule AeroVision.Flight.Tracker do
 
     if map_size(new_state.flights) != map_size(state.flights) do
       CubDB.put(new_state.db, @cache_key, new_state.flights)
+      broadcast_display(new_state)
     end
 
     {:noreply, new_state}

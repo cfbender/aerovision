@@ -16,8 +16,41 @@ defmodule AeroVision.MixProject do
       releases: [{@app, release()}],
       aliases: aliases(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      elixirc_paths: elixirc_paths(Mix.env()),
+      test_coverage: [
+        summary: [threshold: 60],
+        ignore_modules: [
+          # LiveViews require full integration testing infrastructure
+          AeroVisionWeb.DashboardLive,
+          AeroVisionWeb.SettingsLive,
+          AeroVisionWeb.SetupLive,
+          # Framework boilerplate — minimal custom code
+          AeroVisionWeb.Endpoint,
+          AeroVisionWeb.Router,
+          AeroVisionWeb.Layouts,
+          AeroVisionWeb.CoreComponents,
+          # Nerves target-only display driver (wraps Port/binary)
+          AeroVision.Display.Driver
+        ]
+      ]
     ]
+  end
+
+  # On host (dev + test): include lib/stubs so target-only modules like
+  # VintageNet, Circuits.GPIO, and Nerves.Runtime have stub definitions
+  # that satisfy the compiler without producing "undefined module" warnings.
+  # On a real Nerves target (MIX_TARGET=rpi0_2): the real deps are available,
+  # so stubs must NOT be compiled or they'll conflict.
+  defp elixirc_paths(:test), do: host_paths() ++ ["test/support"]
+  defp elixirc_paths(_), do: host_paths()
+
+  defp host_paths do
+    if Mix.target() == :host do
+      ["lib", "lib/stubs"]
+    else
+      ["lib"]
+    end
   end
 
   def cli do
@@ -75,6 +108,7 @@ defmodule AeroVision.MixProject do
        depth: 1},
 
       # Utilities
+      {:mimic, "~> 2.0", only: :test},
       {:floki, "~> 0.36"},
       {:dns_cluster, "~> 0.1"},
       {:telemetry_metrics, "~> 1.0"},

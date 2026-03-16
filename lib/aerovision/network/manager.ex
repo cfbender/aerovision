@@ -343,7 +343,8 @@ defmodule AeroVision.Network.Manager do
   # --- VintageNet target safety wrappers ---------------------------------------
 
   defp on_target? do
-    Application.get_env(:aerovision, :target, :host) != :host
+    target = Application.get_env(:aerovision, :target, :host)
+    target != :host and target != :test
   end
 
   defp vintage_net_configure(interface, config) do

@@ -1,0 +1,268 @@
+defmodule AeroVision.Network.ManagerTest do
+  use ExUnit.Case, async: false
+
+  # AeroVision.PubSub and AeroVision.Config.Store are started by the application
+  # supervisor (target: :test in config/test.exs). Tests must NOT re-start them.
+
+  alias AeroVision.Network.Manager
+  alias AeroVision.Config.Store
+
+  # ── setup ──────────────────────────────────────────────────────────────────
+  # Subscribe to "network" BEFORE starting Manager so we catch any broadcast
+  # emitted during init/1 (which runs synchronously in start_supervised!).
+
+  setup do
+    Store.reset()
+
+    # Subscribe before starting Manager so we catch init broadcasts
+    Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
+
+    start_supervised!(Manager)
+    :ok
+  end
+
+  # ── initial state ───────────────────────────────────────────────────────────
+
+  test "with no credentials stored, mode is :ap on init" do
+    # Store.reset() cleared credentials, so Manager should start in AP mode
+    assert Manager.current_mode() == :ap
+  end
+
+  test "with no credentials, {:network, :ap_mode} is broadcast on init" do
+    assert_receive {:network, :ap_mode}
+  end
+
+  test "with credentials stored, mode is :infrastructure on init" do
+    # Stop Manager, set credentials, restart
+    stop_supervised!(Manager)
+    Store.put(:wifi_ssid, "MyNetwork")
+    Store.put(:wifi_password, "secret123")
+
+    # Drain any pending network messages
+    receive do
+      {:network, _} -> :ok
+    after
+      50 -> :ok
+    end
+
+    start_supervised!(Manager)
+
+    assert Manager.current_mode() == :infrastructure
+  end
+
+  test "with credentials, no :ap_mode broadcast on init" do
+    stop_supervised!(Manager)
+    Store.put(:wifi_ssid, "MyNetwork")
+    Store.put(:wifi_password, "secret123")
+
+    # Drain previous ap_mode broadcast
+    receive do
+      {:network, :ap_mode} -> :ok
+    after
+      50 -> :ok
+    end
+
+    start_supervised!(Manager)
+    refute_receive {:network, :ap_mode}, 100
+  end
+
+  # ── current_mode/0 ──────────────────────────────────────────────────────────
+
+  test "current_mode/0 returns current mode atom" do
+    mode = Manager.current_mode()
+    assert mode in [:ap, :infrastructure, :disconnected]
+  end
+
+  # ── current_ip/0 ────────────────────────────────────────────────────────────
+
+  test "current_ip/0 returns '127.0.0.1' on host" do
+    ip = Manager.current_ip()
+    # On host, fetch_ip returns "127.0.0.1"
+    assert ip == "127.0.0.1"
+  end
+
+  # ── connect_wifi/2 ──────────────────────────────────────────────────────────
+
+  test "connect_wifi/2 saves ssid to Config.Store" do
+    Manager.connect_wifi("TestSSID", "password123")
+    assert Store.get(:wifi_ssid) == "TestSSID"
+  end
+
+  test "connect_wifi/2 saves password to Config.Store" do
+    Manager.connect_wifi("TestSSID", "password123")
+    assert Store.get(:wifi_password) == "password123"
+  end
+
+  test "connect_wifi/2 returns :ok" do
+    result = Manager.connect_wifi("TestSSID", "password123")
+    assert result == :ok
+  end
+
+  test "connect_wifi/2 switches mode to :infrastructure" do
+    # Start in AP mode (no credentials)
+    assert Manager.current_mode() == :ap
+    Manager.connect_wifi("TestSSID", "password123")
+    assert Manager.current_mode() == :infrastructure
+  end
+
+  # ── force_ap_mode/0 ─────────────────────────────────────────────────────────
+
+  test "force_ap_mode/0 returns :ok (cast is async, returns :ok immediately)" do
+    result = Manager.force_ap_mode()
+    assert result == :ok
+  end
+
+  test "force_ap_mode/0 switches mode to :ap" do
+    # First connect so we're in infrastructure
+    Manager.connect_wifi("TestSSID", "pass123")
+    assert Manager.current_mode() == :infrastructure
+
+    Manager.force_ap_mode()
+    # Sync with GenServer via a call
+    _ = Manager.current_mode()
+    assert Manager.current_mode() == :ap
+  end
+
+  test "force_ap_mode/0 broadcasts {:network, :ap_mode}" do
+    # Drain the init broadcast
+    receive do
+      {:network, :ap_mode} -> :ok
+    after
+      100 -> :ok
+    end
+
+    Manager.connect_wifi("TestSSID", "pass123")
+    # Drain any network messages from connect_wifi
+    receive do
+      {:network, _} -> :ok
+    after
+      50 -> :ok
+    end
+
+    Manager.force_ap_mode()
+    assert_receive {:network, :ap_mode}
+  end
+
+  # ── scan_networks/0 ─────────────────────────────────────────────────────────
+
+  test "scan_networks/0 returns [] on host" do
+    result = Manager.scan_networks()
+    assert result == []
+  end
+
+  # ── config_changed messages ─────────────────────────────────────────────────
+
+  test "{:config_changed, :wifi_ssid, ...} with password set triggers reconnect" do
+    # Store both credentials so Manager reads them when the config change fires
+    Store.put(:wifi_ssid, "NewSSID")
+    Store.put(:wifi_password, "secret123")
+    # Simulate the config change broadcast that the store would emit
+    Phoenix.PubSub.broadcast(
+      AeroVision.PubSub,
+      "config",
+      {:config_changed, :wifi_ssid, "NewSSID"}
+    )
+
+    # Give the GenServer time to process
+    _ = Manager.current_mode()
+    assert Manager.current_mode() == :infrastructure
+  end
+
+  test "{:config_changed, :wifi_ssid, \"\"} with no password does not crash" do
+    # No password set — credentials_present? returns false → no reconnect
+    Phoenix.PubSub.broadcast(AeroVision.PubSub, "config", {:config_changed, :wifi_ssid, ""})
+    _ = Manager.current_mode()
+    # Should still be running fine
+    assert Manager.current_mode() in [:ap, :infrastructure]
+  end
+
+  test "unrelated config changes are ignored without crash" do
+    Phoenix.PubSub.broadcast(
+      AeroVision.PubSub,
+      "config",
+      {:config_changed, :display_mode, :tracked}
+    )
+
+    _ = Manager.current_mode()
+    # Process still alive
+    assert is_pid(GenServer.whereis(Manager))
+  end
+
+  # ── VintageNet-format messages ───────────────────────────────────────────────
+
+  test ":internet connection event switches mode to :infrastructure" do
+    # Start in AP mode
+    assert Manager.current_mode() == :ap
+
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
+    # Sync with a call
+    assert Manager.current_mode() == :infrastructure
+  end
+
+  test ":internet connection event broadcasts {:network, :connected, ip}" do
+    # Drain init broadcast
+    receive do
+      {:network, :ap_mode} -> :ok
+    after
+      100 -> :ok
+    end
+
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
+
+    assert_receive {:network, :connected, ip}
+    # On host, ip is "127.0.0.1"
+    assert is_binary(ip)
+  end
+
+  test ":lan connection event also switches mode to :infrastructure" do
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :lan, %{}})
+    assert Manager.current_mode() == :infrastructure
+  end
+
+  @tag :capture_log
+  test ":disconnected from :infrastructure sets :disconnected mode" do
+    # First move to infrastructure
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
+    assert Manager.current_mode() == :infrastructure
+
+    # Now disconnect
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :disconnected, %{}})
+    assert Manager.current_mode() == :disconnected
+  end
+
+  @tag :capture_log
+  test ":reconnect_timeout fires and switches back to :ap mode" do
+    # Move to infrastructure first
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
+    assert Manager.current_mode() == :infrastructure
+
+    # Disconnect (starts timer)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :disconnected, %{}})
+    assert Manager.current_mode() == :disconnected
+
+    # Drain any prior network broadcasts
+    receive do
+      {:network, _} -> :ok
+    after
+      50 -> :ok
+    end
+
+    # Manually trigger the reconnect timeout (don't wait 30s)
+    send(pid, :reconnect_timeout)
+    assert_receive {:network, :ap_mode}
+    assert Manager.current_mode() == :ap
+  end
+
+  test ":disconnected while in :ap mode takes no action" do
+    assert Manager.current_mode() == :ap
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :disconnected, %{}})
+    # Mode should remain :ap, no crash
+    assert Manager.current_mode() == :ap
+  end
+end

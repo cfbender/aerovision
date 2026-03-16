@@ -72,19 +72,39 @@ defmodule AeroVision.Flight.AeroAPI do
   # ───────────────────────────────────────────────────────────── callbacks ──
 
   @impl true
-  def init(_opts) do
-    :ets.new(@cache_table, [:named_table, :public, :set, read_concurrency: true])
+  def init(opts) do
+    # Create the ETS cache table if it does not already exist; clear it if it
+    # does (e.g. after a supervised restart, so stale entries don't linger).
+    if :ets.whereis(@cache_table) == :undefined do
+      :ets.new(@cache_table, [:named_table, :public, :set, read_concurrency: true])
+    else
+      :ets.delete_all_objects(@cache_table)
+    end
 
     data_dir =
-      if Application.get_env(:aerovision, :target, :host) == :host do
-        Path.join(System.user_home!(), ".aerovision/aeroapi_cache")
-      else
-        "/data/aerovision/aeroapi_cache"
-      end
+      Keyword.get(opts, :data_dir) ||
+        case Application.get_env(:aerovision, :target, :host) do
+          target when target in [:host, :test] ->
+            Path.join(System.user_home!(), ".aerovision/aeroapi_cache")
+
+          _ ->
+            "/data/aerovision/aeroapi_cache"
+        end
 
     File.mkdir_p!(data_dir)
 
-    db = AeroVision.DB.open(data_dir: data_dir, name: @persist_table)
+    # Use a named CubDB only when no custom data_dir was provided (i.e. normal
+    # startup). In tests, each test passes its own data_dir and we must NOT
+    # share the named table or subsequent start_supervised! calls would get the
+    # old process back via :already_started.
+    db_opts =
+      if Keyword.has_key?(opts, :data_dir) do
+        [data_dir: data_dir]
+      else
+        [data_dir: data_dir, name: @persist_table]
+      end
+
+    db = AeroVision.DB.open(db_opts)
 
     # Load valid cache entries into ETS and purge expired ones from CubDB
     now = System.system_time(:second)

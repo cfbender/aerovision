@@ -20,7 +20,7 @@ defmodule AeroVision.Config.Store do
     wifi_password: nil,
     location_lat: 35.7796,
     location_lon: -78.6382,
-    radius_km: 50,
+    radius_km: 40.234,
     tracked_flights: [],
     airline_filters: [],
     display_brightness: 80,
@@ -67,8 +67,8 @@ defmodule AeroVision.Config.Store do
   # Server callbacks
 
   @impl true
-  def init(_opts) do
-    data_dir = data_dir()
+  def init(opts) do
+    data_dir = Keyword.get(opts, :data_dir, data_dir())
     File.mkdir_p!(data_dir)
     db = AeroVision.DB.open(data_dir: data_dir)
     {:ok, %{db: db}}
@@ -90,7 +90,7 @@ defmodule AeroVision.Config.Store do
 
   @impl true
   def handle_call(:all, _from, %{db: db} = state) do
-    stored = CubDB.select(db) |> Enum.into(%{})
+    stored = safe_select(db)
     config = Map.merge(@defaults, stored)
     {:reply, config, state}
   end
@@ -102,11 +102,27 @@ defmodule AeroVision.Config.Store do
     {:reply, :ok, state}
   end
 
+  # CubDB select/2 can fail mid-traversal if the B-tree is in a corrupt or
+  # inconsistent state (e.g. after an interrupted compaction). Return an empty
+  # map on failure so callers fall back to @defaults rather than crashing.
+  defp safe_select(db) do
+    CubDB.select(db) |> Enum.into(%{})
+  rescue
+    _ ->
+      Logger.error(
+        "[Config.Store] CubDB select failed — returning defaults. Consider clearing ~/.aerovision/config."
+      )
+
+      %{}
+  end
+
   defp data_dir do
-    if Application.get_env(:aerovision, :target, :host) == :host do
-      Path.join(System.user_home!(), ".aerovision/config")
-    else
-      "/data/aerovision/config"
+    case Application.get_env(:aerovision, :target, :host) do
+      target when target in [:host, :test] ->
+        Path.join(System.user_home!(), ".aerovision/config")
+
+      _ ->
+        "/data/aerovision/config"
     end
   end
 end

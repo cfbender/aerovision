@@ -48,5 +48,5 @@ config :aerovision, :display,
   brightness: 80,
   slowdown_gpio: 1
 
-import_config "#{config_env()}.exs"
 import_config "#{Mix.target()}.exs"
+import_config "#{config_env()}.exs"
