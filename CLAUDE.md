@@ -90,8 +90,8 @@ Commands:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `:location_lat` | float | 35.7796 | Center latitude for nearby scan |
-| `:location_lon` | float | -78.6382 | Center longitude for nearby scan |
+| `:location_lat` | float | 35.7721 | Center latitude for nearby scan |
+| `:location_lon` | float | -78.63861 | Center longitude for nearby scan |
 | `:radius_km` | number | 50 | Scan radius in kilometers |
 | `:display_mode` | atom | `:nearby` | `:nearby` or `:tracked` |
 | `:display_brightness` | integer | 80 | LED brightness percent (1–100) |

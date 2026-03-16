@@ -378,8 +378,8 @@ All settings are accessible at **[http://aerovision.local/settings](http://aerov
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Location** — Latitude | 35.7796 | Center of the search area |
-| **Location** — Longitude | -78.6382 | Center of the search area |
+| **Location** — Latitude | 35.7721 | Center of the search area |
+| **Location** — Longitude | -78.63861 | Center of the search area |
 | **Location** — Radius | 50 km | How far out to scan for flights |
 | **Display Mode** | Nearby | `Nearby` = all flights in radius; `Tracked` = specific callsigns only |
 | **Tracked Flights** | (empty) | Callsigns to monitor in Tracked mode (e.g., `AAL123`) |

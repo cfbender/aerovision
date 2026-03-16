@@ -18,8 +18,8 @@ defmodule AeroVision.Config.Store do
   @defaults %{
     wifi_ssid: nil,
     wifi_password: nil,
-    location_lat: 35.7796,
-    location_lon: -78.6382,
+    location_lat: 35.7721,
+    location_lon: -78.63861,
     radius_km: 40.234,
     tracked_flights: [],
     airline_filters: [],

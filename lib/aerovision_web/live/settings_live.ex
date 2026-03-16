@@ -286,7 +286,7 @@ defmodule AeroVisionWeb.SettingsLive do
                   value={@location_lat}
                   step="0.0001"
                   class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="35.7796"
+                  placeholder="35.7721"
                 />
               </div>
               <div class="space-y-1">
@@ -297,7 +297,7 @@ defmodule AeroVisionWeb.SettingsLive do
                   value={@location_lon}
                   step="0.0001"
                   class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="-78.6382"
+                  placeholder="-78.63861"
                 />
               </div>
             </div>

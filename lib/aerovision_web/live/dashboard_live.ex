@@ -426,7 +426,7 @@ defmodule AeroVisionWeb.DashboardLive do
                     value=""
                     step="0.0001"
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                    placeholder="35.7796"
+                    placeholder="35.7721"
                   />
                 </div>
                 <div class="space-y-1">
@@ -437,7 +437,7 @@ defmodule AeroVisionWeb.DashboardLive do
                     value=""
                     step="0.0001"
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                    placeholder="-78.6382"
+                    placeholder="-78.63861"
                   />
                 </div>
               </div>
@@ -601,7 +601,7 @@ defmodule AeroVisionWeb.DashboardLive do
     cond do
       is_nil(config.wifi_ssid) or config.wifi_ssid == "" -> :wifi
       is_nil(config.opensky_client_id) or config.opensky_client_id == "" -> :api_keys
-      config.location_lat == 35.7796 and config.location_lon == -78.6382 -> :location
+      config.location_lat == 35.7721 and config.location_lon == -78.63861 -> :location
       true -> :done
     end
   end

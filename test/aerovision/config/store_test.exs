@@ -37,8 +37,8 @@ defmodule AeroVision.Config.StoreTest do
   # ── get/1 ────────────────────────────────────────────────────────────────────
 
   test "get/1 returns default for unset key", %{store: store} do
-    assert get(store, :location_lat) == 35.7796
-    assert get(store, :location_lon) == -78.6382
+    assert get(store, :location_lat) == 35.7721
+    assert get(store, :location_lon) == -78.63861
     assert get(store, :radius_km) == 40.234
     assert get(store, :tracked_flights) == []
     assert get(store, :airline_filters) == []
@@ -103,8 +103,8 @@ defmodule AeroVision.Config.StoreTest do
   test "all/0 contains all default keys with default values", %{store: store} do
     config = all(store)
 
-    assert config.location_lat == 35.7796
-    assert config.location_lon == -78.6382
+    assert config.location_lat == 35.7721
+    assert config.location_lon == -78.63861
     assert config.radius_km == 40.234
     assert config.tracked_flights == []
     assert config.airline_filters == []
@@ -123,7 +123,7 @@ defmodule AeroVision.Config.StoreTest do
 
     assert config.location_lat == 40.7128
     assert config.radius_km == 25
-    assert config.location_lon == -78.6382
+    assert config.location_lon == -78.63861
   end
 
   # ── reset/0 ──────────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ defmodule AeroVision.Config.StoreTest do
 
     reset(store)
 
-    assert get(store, :location_lat) == 35.7796
+    assert get(store, :location_lat) == 35.7721
     assert get(store, :radius_km) == 40.234
   end
 
@@ -163,7 +163,7 @@ defmodule AeroVision.Config.StoreTest do
     reset(store)
 
     config = all(store)
-    assert config.location_lat == 35.7796
+    assert config.location_lat == 35.7721
     assert config.display_mode == :nearby
   end
 
@@ -236,7 +236,7 @@ defmodule AeroVision.Config.StoreTest do
     put(store, :display_mode, :tracked)
     reset(store)
 
-    assert get(store, :location_lat) == 35.7796
+    assert get(store, :location_lat) == 35.7721
     assert get(store, :display_mode) == :nearby
   end
 
