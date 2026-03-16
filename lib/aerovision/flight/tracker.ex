@@ -66,16 +66,13 @@ defmodule AeroVision.Flight.Tracker do
     File.mkdir_p!(data_dir)
 
     db =
-      case CubDB.start_link(
-             data_dir: data_dir,
-             name: :aerovision_tracker_cache,
-             # Compact aggressively — we write one key repeatedly every 15s,
-             # so the append-only file accumulates dirt quickly.
-             auto_compact: {10, 0.3}
-           ) do
-        {:ok, pid} -> pid
-        {:error, {:already_started, pid}} -> pid
-      end
+      AeroVision.DB.open(
+        data_dir: data_dir,
+        name: :aerovision_tracker_cache,
+        # Compact aggressively — we write one key repeatedly every 15s,
+        # so the append-only file accumulates dirt quickly.
+        auto_compact: {10, 0.3}
+      )
 
     # Restore last known flights from cache
     cached_flights = CubDB.get(db, @cache_key, %{})
@@ -289,13 +286,15 @@ defmodule AeroVision.Flight.Tracker do
 
   defp should_enrich?(_callsign, _state), do: true
 
+  @max_display_flights 3
+
   # ───────────────────────────────────────────────────────── filter logic ──
 
   defp filtered_flights(%{mode: :nearby, airline_filters: filters, flights: flights}) do
     flights
     |> Map.values()
     |> filter_by_airline(filters)
-    |> Enum.sort_by(& &1.state_vector.callsign)
+    |> top_flights()
   end
 
   defp filtered_flights(%{mode: :tracked, tracked_flights: tracked_list, flights: flights}) do
@@ -305,12 +304,25 @@ defmodule AeroVision.Flight.Tracker do
       callsign = tracked.state_vector.callsign
       Enum.any?(tracked_list, &callsign_matches?(callsign, &1))
     end)
-    |> Enum.sort_by(& &1.state_vector.callsign)
+    |> top_flights()
   end
 
   # Fall-through for any unexpected modes
   defp filtered_flights(%{flights: flights}) do
-    flights |> Map.values() |> Enum.sort_by(& &1.state_vector.callsign)
+    flights |> Map.values() |> top_flights()
+  end
+
+  # Sort and limit to @max_display_flights.
+  # Enriched flights first (more info = better display card), then by most
+  # recently seen (freshest ADS-B contact at the top).
+  defp top_flights(flights) do
+    flights
+    |> Enum.sort_by(fn tracked ->
+      enriched = if tracked.flight_info, do: 0, else: 1
+      last_seen = DateTime.to_unix(tracked.last_seen_at)
+      {enriched, -last_seen}
+    end)
+    |> Enum.take(@max_display_flights)
   end
 
   # Empty filter list → show everything

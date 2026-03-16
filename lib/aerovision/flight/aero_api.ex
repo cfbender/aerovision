@@ -31,6 +31,10 @@ defmodule AeroVision.Flight.AeroAPI do
   @cache_ttl_sec 86_400
   @rate_limit_ms 1_000
   @persist_table :aerovision_aeroapi_persist
+  @monthly_call_cap 1_000
+  # Large unix timestamp used as a sentinel "infinity" in sort comparisons.
+  # Year ~2286 — safely beyond any real flight departure time.
+  @large_unix 9_999_999_999
 
   # ─────────────────────────────────────────────────────────── public API ──
 
@@ -80,11 +84,7 @@ defmodule AeroVision.Flight.AeroAPI do
 
     File.mkdir_p!(data_dir)
 
-    db =
-      case CubDB.start_link(data_dir: data_dir, name: @persist_table) do
-        {:ok, pid} -> pid
-        {:error, {:already_started, pid}} -> pid
-      end
+    db = AeroVision.DB.open(data_dir: data_dir, name: @persist_table)
 
     # Load valid cache entries into ETS and purge expired ones from CubDB
     now = System.system_time(:second)
@@ -170,66 +170,74 @@ defmodule AeroVision.Flight.AeroAPI do
   end
 
   defp do_fetch(callsign, state) do
-    case api_key() do
-      nil ->
+    cond do
+      is_nil(api_key()) ->
         Logger.warning("[AeroAPI] No API key configured, skipping enrichment for #{callsign}")
         state
 
-      key ->
-        base_url = aeroapi_config(:base_url)
-        url = "#{base_url}/flights/#{URI.encode(callsign)}"
-        headers = [{"x-apikey", key}]
+      state.call_count >= @monthly_call_cap ->
+        Logger.warning(
+          "[AeroAPI] Monthly cap of #{@monthly_call_cap} calls reached — skipping #{callsign}. " <>
+            "Cap resets on the 1st of next month."
+        )
 
-        case Req.get(url, headers: headers) do
-          {:ok, %{status: 200, body: body}} ->
-            case parse_flight(body) do
-              {:ok, flight_info} ->
-                new_state = cache_put(callsign, flight_info, state)
+        state
 
-                Phoenix.PubSub.broadcast(
-                  @pubsub,
-                  @topic,
-                  {:flight_enriched, callsign, flight_info}
-                )
+      true ->
+        do_fetch_http(callsign, state)
+    end
+  end
 
-                Logger.debug("[AeroAPI] Enriched #{callsign}")
+  defp do_fetch_http(callsign, state) do
+    key = api_key()
+    base_url = aeroapi_config(:base_url)
+    url = "#{base_url}/flights/#{URI.encode(callsign)}"
+    headers = [{"x-apikey", key}]
 
-                # Increment monthly counter
-                new_count = new_state.call_count + 1
-                CubDB.put(new_state.db, {:calls, new_state.month_key}, new_count)
-                Phoenix.PubSub.broadcast(@pubsub, "config", {:aeroapi_usage, new_count})
+    case Req.get(url, headers: headers) do
+      {:ok, %{status: 200, body: body}} ->
+        case parse_flight(body) do
+          {:ok, flight_info} ->
+            new_state = cache_put(callsign, flight_info, state)
 
-                # Reset counter if month rolled over
-                current_month = month_key()
+            Phoenix.PubSub.broadcast(@pubsub, @topic, {:flight_enriched, callsign, flight_info})
+            Logger.debug("[AeroAPI] Enriched #{callsign}")
 
-                if current_month != new_state.month_key do
-                  CubDB.put(new_state.db, {:calls, current_month}, 1)
-                  %{new_state | call_count: 1, month_key: current_month}
-                else
-                  %{new_state | call_count: new_count}
-                end
+            # Increment monthly counter
+            new_count = new_state.call_count + 1
+            CubDB.put(new_state.db, {:calls, new_state.month_key}, new_count)
+            Phoenix.PubSub.broadcast(@pubsub, "config", {:aeroapi_usage, new_count})
 
-              :error ->
-                Logger.debug("[AeroAPI] No usable flight data for #{callsign}")
-                state
+            # Reset counter if month rolled over
+            current_month = month_key()
+
+            if current_month != new_state.month_key do
+              CubDB.put(new_state.db, {:calls, current_month}, 1)
+              %{new_state | call_count: 1, month_key: current_month}
+            else
+              %{new_state | call_count: new_count}
             end
 
-          {:ok, %{status: 404}} ->
-            Logger.debug("[AeroAPI] Flight not found: #{callsign}")
-            state
-
-          {:ok, %{status: 429}} ->
-            Logger.warning("[AeroAPI] Rate limited (429) for #{callsign}")
-            state
-
-          {:ok, %{status: status}} ->
-            Logger.warning("[AeroAPI] Unexpected status #{status} for #{callsign}")
-            state
-
-          {:error, reason} ->
-            Logger.warning("[AeroAPI] HTTP error for #{callsign}: #{inspect(reason)}")
+          :error ->
+            Logger.debug("[AeroAPI] No usable flight data for #{callsign}")
             state
         end
+
+      {:ok, %{status: 404}} ->
+        Logger.debug("[AeroAPI] Flight not found: #{callsign}")
+        state
+
+      {:ok, %{status: 429}} ->
+        Logger.warning("[AeroAPI] Rate limited (429) for #{callsign}")
+        state
+
+      {:ok, %{status: status}} ->
+        Logger.warning("[AeroAPI] Unexpected status #{status} for #{callsign}")
+        state
+
+      {:error, reason} ->
+        Logger.warning("[AeroAPI] HTTP error for #{callsign}: #{inspect(reason)}")
+        state
     end
   end
 
@@ -257,30 +265,31 @@ defmodule AeroVision.Flight.AeroAPI do
   defp parse_flight(_), do: :error
 
   # Pick the best flight occurrence from AeroAPI's list:
-  # 1. Currently airborne: actual_out set (departed) and actual_in not set (not landed)
-  # 2. Most recently departed: largest actual_out before now
-  # 3. Soonest scheduled: smallest scheduled_out closest to now
+  # 1. Currently airborne: actual_out is set AND in the past, actual_in not set
+  # 2. Fallback: occurrence with scheduled_out closest to now
   defp best_flight(flights) do
     now_unix = System.system_time(:second)
 
     airborne =
       Enum.filter(flights, fn f ->
-        Map.get(f, "actual_out") != nil and Map.get(f, "actual_in") == nil
+        actual_out = parse_unix(Map.get(f, "actual_out"))
+        actual_in = Map.get(f, "actual_in")
+        # Must have departed (actual_out set), departure must be in the past,
+        # and must not have landed yet (actual_in nil)
+        actual_out != nil and actual_out <= now_unix and actual_in == nil
       end)
 
     if airborne != [] do
       # Among airborne, pick the one that departed most recently
       Enum.max_by(airborne, fn f ->
-        case parse_unix(Map.get(f, "actual_out")) do
-          nil -> 0
-          t -> t
-        end
+        parse_unix(Map.get(f, "actual_out")) || 0
       end)
     else
-      # No airborne flight — pick the one with scheduled_out closest to now
+      # No airborne flight — pick the occurrence with scheduled_out closest to now
+      # Use a large integer sentinel instead of :infinity to keep comparisons homogeneous
       Enum.min_by(flights, fn f ->
         dep = parse_unix(Map.get(f, "scheduled_out")) || parse_unix(Map.get(f, "actual_out"))
-        if dep, do: abs(dep - now_unix), else: :infinity
+        if dep, do: abs(dep - now_unix), else: @large_unix
       end)
     end
   end

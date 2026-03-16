@@ -100,12 +100,12 @@ defmodule AeroVisionWeb.DashboardLive do
   def handle_event("setup_location", %{"location" => params}, socket) do
     lat = parse_float(params["lat"])
     lon = parse_float(params["lon"])
-    radius = parse_float(params["radius_km"])
+    radius_mi = parse_float(params["radius_mi"])
 
-    if lat && lon && radius do
+    if lat && lon && radius_mi do
       AeroVision.Config.Store.put(:location_lat, lat)
       AeroVision.Config.Store.put(:location_lon, lon)
-      AeroVision.Config.Store.put(:radius_km, radius)
+      AeroVision.Config.Store.put(:radius_km, Float.round(radius_mi * 1.60934, 2))
     end
 
     config = AeroVision.Config.Store.all()
@@ -442,16 +442,18 @@ defmodule AeroVisionWeb.DashboardLive do
                 </div>
               </div>
               <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">Radius (km)</label>
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  Radius (miles)
+                </label>
                 <input
                   type="number"
-                  name="location[radius_km]"
+                  name="location[radius_mi]"
                   value=""
-                  min="5"
-                  max="500"
-                  step="5"
+                  min="3"
+                  max="300"
+                  step="1"
                   class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="50"
+                  placeholder="31"
                 />
               </div>
               <button

@@ -21,10 +21,10 @@ defmodule AeroVisionWeb.SettingsLive do
     {:ok,
      assign(socket,
        page_title: "Settings",
-       # Location
+       # Location (radius stored as km internally, displayed as miles)
        location_lat: to_string(config.location_lat),
        location_lon: to_string(config.location_lon),
-       radius_km: to_string(config.radius_km),
+       radius_mi: to_string(km_to_mi(config.radius_km)),
        # Display
        display_mode: config.display_mode,
        display_brightness: config.display_brightness,
@@ -89,20 +89,18 @@ defmodule AeroVisionWeb.SettingsLive do
   def handle_event("save_location", %{"location" => params}, socket) do
     lat = parse_float(params["location_lat"])
     lon = parse_float(params["location_lon"])
-    radius = parse_float(params["radius_km"])
+    radius_mi = parse_float(params["radius_mi"])
 
-    dbg(radius)
-
-    if lat && lon && radius do
+    if lat && lon && radius_mi do
       Store.put(:location_lat, lat)
       Store.put(:location_lon, lon)
-      Store.put(:radius_km, radius)
+      Store.put(:radius_km, mi_to_km(radius_mi))
 
       {:noreply,
        assign(socket,
          location_lat: to_string(lat),
          location_lon: to_string(lon),
-         radius_km: to_string(radius),
+         radius_mi: to_string(radius_mi),
          saved_flash: "location"
        )}
     else
@@ -304,16 +302,18 @@ defmodule AeroVisionWeb.SettingsLive do
               </div>
             </div>
             <div class="space-y-1">
-              <label class="block text-xs text-gray-400 uppercase tracking-wide">Radius (km)</label>
+              <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                Radius (miles)
+              </label>
               <input
                 type="number"
-                name="location[radius_km]"
-                value={@radius_km}
-                min="5"
-                max="500"
-                step="5"
+                name="location[radius_mi]"
+                value={@radius_mi}
+                min="3"
+                max="300"
+                step="1"
                 class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="50"
+                placeholder="31"
               />
             </div>
             <.save_button />
@@ -860,4 +860,7 @@ defmodule AeroVisionWeb.SettingsLive do
   defp wifi_signal_icon(rssi) when rssi >= -65, do: "▂▄▆░"
   defp wifi_signal_icon(rssi) when rssi >= -80, do: "▂▄░░"
   defp wifi_signal_icon(_), do: "▂░░░"
+
+  defp km_to_mi(km), do: Float.round(km * 0.621371, 1)
+  defp mi_to_km(mi), do: Float.round(mi * 1.60934, 2)
 end

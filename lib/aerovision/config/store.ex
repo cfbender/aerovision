@@ -70,7 +70,7 @@ defmodule AeroVision.Config.Store do
   def init(_opts) do
     data_dir = data_dir()
     File.mkdir_p!(data_dir)
-    {:ok, db} = CubDB.start_link(data_dir: data_dir)
+    db = AeroVision.DB.open(data_dir: data_dir)
     {:ok, %{db: db}}
   end
 

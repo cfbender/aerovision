@@ -75,13 +75,16 @@ defmodule AeroVision.Flight.OpenSky do
   end
 
   # When location changes, trigger an immediate re-poll with the new bounding box.
-  # The new bounding_box() is read from Store on every fetch, so no state update needed.
+  # Debounce rapid location changes — cancel the existing timer and schedule a
+  # fresh fetch in 500ms. If lat, lon, and radius all change in quick succession
+  # (three separate config_changed messages), only one HTTP request fires.
   @impl true
   def handle_info({:config_changed, key, _value}, state)
       when key in [:location_lat, :location_lon, :radius_km] do
-    Logger.info("[OpenSky] Location changed, triggering immediate re-poll")
-    new_state = do_fetch(state)
-    {:noreply, schedule_poll(new_state)}
+    Logger.info("[OpenSky] Location changed, scheduling re-poll")
+    if state.poll_timer, do: Process.cancel_timer(state.poll_timer)
+    timer = Process.send_after(self(), :poll, 500)
+    {:noreply, %{state | poll_timer: timer}}
   end
 
   def handle_info({:config_changed, _key, _value}, state) do
