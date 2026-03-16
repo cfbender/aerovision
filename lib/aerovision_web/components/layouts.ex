@@ -34,6 +34,9 @@ defmodule AeroVisionWeb.Layouts do
           <.link navigate={~p"/"} class="text-gray-300 hover:text-white transition-colors">
             Dashboard
           </.link>
+          <.link navigate={~p"/preview"} class="text-gray-300 hover:text-white transition-colors">
+            Preview
+          </.link>
           <.link navigate={~p"/settings"} class="text-gray-300 hover:text-white transition-colors">
             Settings
           </.link>

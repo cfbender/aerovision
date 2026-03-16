@@ -126,7 +126,6 @@ func readLoop(handler func(cmd Command)) {
 			continue
 		}
 
-		log.Printf("Received command: %s", cmd.Cmd)
 		handler(cmd)
 	}
 }

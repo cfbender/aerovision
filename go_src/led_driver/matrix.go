@@ -5,6 +5,14 @@ package main
 // Only meaningful for emulator builds; ignored by the real hardware matrix.
 var previewMode bool
 
+// previewIPC controls whether TerminalMatrix also writes rendered frames
+// back to stdout as length-prefixed IPC packets for Elixir to consume.
+var previewIPC bool
+
+// previewPixels controls whether TerminalMatrix sends raw pixel data
+// back over stdout as IPC packets instead of ANSI frames.
+var previewPixels bool
+
 // MatrixConfig holds LED matrix hardware configuration
 type MatrixConfig struct {
 	Rows            int

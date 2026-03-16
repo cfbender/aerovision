@@ -87,13 +87,26 @@ defmodule AeroVision.Display.Driver do
   # --- Async cast: send_command ------------------------------------------------
 
   @impl true
-  def handle_cast({:send_command, _command_map}, %{alive: false} = state) do
-    # No-op mode — silently drop
+  def handle_cast({:send_command, command_map}, %{alive: false} = state) do
+    # Real port is in no-op mode, but still broadcast so PreviewServer renders
+    Phoenix.PubSub.broadcast(
+      AeroVision.PubSub,
+      "display_commands",
+      {:display_command, command_map}
+    )
+
     {:noreply, state}
   end
 
   def handle_cast({:send_command, command_map}, state) do
     send_to_port(state.port, command_map)
+
+    Phoenix.PubSub.broadcast(
+      AeroVision.PubSub,
+      "display_commands",
+      {:display_command, command_map}
+    )
+
     {:noreply, state}
   end
 
@@ -124,7 +137,11 @@ defmodule AeroVision.Display.Driver do
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     case Jason.decode(data) do
       {:ok, response} ->
-        Logger.debug("[Display.Driver] Response from led_driver: #{inspect(response)}")
+        # Only log non-ok responses to avoid terminal spam on every render
+        if Map.get(response, "status") not in ["ok", "frame"] do
+          Logger.debug("[Display.Driver] Response from led_driver: #{inspect(response)}")
+        end
+
         state = maybe_resolve_pending_call(response, state)
         {:noreply, state}
 
@@ -135,7 +152,10 @@ defmodule AeroVision.Display.Driver do
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.error("[Display.Driver] led_driver exited with status #{status} — letting supervisor restart")
+    Logger.error(
+      "[Display.Driver] led_driver exited with status #{status} — letting supervisor restart"
+    )
+
     # Fail the GenServer so the supervisor can restart us (and the port)
     {:stop, {:port_exited, status}, %{state | port: nil, alive: false}}
   end

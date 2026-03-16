@@ -23,6 +23,9 @@ aerovision-*.tar
 /go_src/led_driver/led_driver
 /priv/led_driver
 
+# Environment variables (contains API keys — never commit)
+.env
+
 # Editor
 .elixir_ls/
 .vscode/

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 )
@@ -36,9 +37,11 @@ func NewTerminalMatrix(config *MatrixConfig) (Matrix, error) {
 		pixels[i] = make([]termPixel, w)
 	}
 
-	// Hide cursor and clear screen before first frame.
-	fmt.Fprint(os.Stderr, "\033[?25l")
-	fmt.Fprint(os.Stderr, "\033[2J")
+	// Hide cursor and clear screen — only in interactive mode.
+	if !previewIPC && !previewPixels {
+		fmt.Fprint(os.Stderr, "\033[?25l")
+		fmt.Fprint(os.Stderr, "\033[2J")
+	}
 
 	return &TerminalMatrix{
 		width:      w,
@@ -139,13 +142,55 @@ func (m *TerminalMatrix) Render() {
 	// Status line.
 	fmt.Fprintf(&buf, "\033[90m Brightness: %d%%  Press Ctrl+C to exit\033[0m\n", m.brightness)
 
-	// Write entire frame to stderr in one call to minimise flicker.
-	os.Stderr.Write(buf.Bytes())
+	// Only write ANSI to terminal in interactive mode — suppress when
+	// either IPC or pixel mode is active (both use stdout for data).
+	if !previewIPC && !previewPixels {
+		os.Stderr.Write(buf.Bytes())
+	}
+
+	// In preview-ipc mode, also send the raw ANSI frame back over stdout
+	// as a length-prefixed JSON packet so Elixir can convert it to HTML.
+	if previewIPC {
+		type frameResponse struct {
+			Status string `json:"status"`
+			Frame  string `json:"frame"`
+		}
+		resp := frameResponse{Status: "frame", Frame: buf.String()}
+		data, err := json.Marshal(resp)
+		if err == nil {
+			_ = writeMessage(os.Stdout, data)
+		}
+	}
+
+	// In preview-pixels mode, send the raw pixel buffer as a flat JSON array.
+	// Each element is [r, g, b] — the pixel at index (y*width + x).
+	if previewPixels {
+		type pixelResponse struct {
+			Status string     `json:"status"`
+			Pixels [][3]uint8 `json:"pixels"`
+		}
+
+		flat := make([][3]uint8, m.width*m.height)
+		for y := 0; y < m.height; y++ {
+			for x := 0; x < m.width; x++ {
+				p := m.pixels[y][x]
+				flat[y*m.width+x] = [3]uint8{p.r, p.g, p.b}
+			}
+		}
+
+		resp := pixelResponse{Status: "pixels", Pixels: flat}
+		data, err := json.Marshal(resp)
+		if err == nil {
+			_ = writeMessage(os.Stdout, data)
+		}
+	}
 }
 
 func (m *TerminalMatrix) Close() {
-	// Restore terminal state: show cursor, reset attributes, clear screen.
-	fmt.Fprint(os.Stderr, "\033[?25h")
-	fmt.Fprint(os.Stderr, "\033[0m")
-	fmt.Fprint(os.Stderr, "\033[2J\033[H")
+	// Restore terminal state only when running interactively.
+	if !previewIPC && !previewPixels {
+		fmt.Fprint(os.Stderr, "\033[?25h")
+		fmt.Fprint(os.Stderr, "\033[0m")
+		fmt.Fprint(os.Stderr, "\033[2J\033[H")
+	}
 }

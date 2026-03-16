@@ -20,5 +20,6 @@ defmodule AeroVisionWeb.Router do
     live("/", DashboardLive, :index)
     live("/settings", SettingsLive, :index)
     live("/setup", SetupLive, :index)
+    live("/preview", PreviewLive, :index)
   end
 end

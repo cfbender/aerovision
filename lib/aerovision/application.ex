@@ -35,6 +35,12 @@ defmodule AeroVision.Application do
       AeroVision.Flight.AeroAPI,
       AeroVision.Flight.OpenSky,
       AeroVision.Flight.Tracker,
+      # Display subsystem (no-op when binary not found)
+      AeroVision.Display.Driver,
+      AeroVision.Display.PreviewServer,
+      AeroVision.Display.Renderer,
+      # GPIO button input (no-op on host)
+      AeroVision.GPIO.Button,
       # Phoenix endpoint for development
       AeroVisionWeb.Endpoint
     ]

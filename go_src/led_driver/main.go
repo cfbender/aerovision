@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -24,11 +25,31 @@ func main() {
 	slowdownGpio := flag.Int("led-slowdown-gpio", 1, "GPIO slowdown factor")
 	preview := flag.Bool("preview", false, "Render display to terminal with ANSI colors (emulator mode)")
 	demo := flag.Bool("demo", false, "Show a sample flight card and enter preview mode (implies --preview)")
+	previewIpc := flag.Bool("preview-ipc", false, "Send rendered frames back over stdout as IPC packets (implies --preview)")
+	previewPixelsFlag := flag.Bool("preview-pixels", false, "Send pixel data back over stdout as IPC packets (implies --preview)")
 	flag.Parse()
 
 	// --demo implies --preview.
 	if *demo {
 		*preview = true
+	}
+
+	if *previewIpc {
+		*preview = true
+		previewIPC = true
+	}
+
+	if *previewPixelsFlag {
+		*preview = true
+		previewPixels = true
+		previewIPC = false // pixels mode supersedes ipc mode
+		log.SetOutput(io.Discard)
+	}
+
+	// In preview-ipc mode, suppress all stderr output — the ANSI frames are
+	// sent back over stdout as IPC packets, so nothing should go to the terminal.
+	if *previewIpc {
+		log.SetOutput(io.Discard)
 	}
 
 	// Activate terminal rendering when --preview or --demo is requested.

@@ -25,13 +25,46 @@ import { LiveSocket } from "phoenix_live_view";
 import { hooks as colocatedHooks } from "phoenix-colocated/aerovision";
 import topbar from "../vendor/topbar";
 
+let Hooks = {}
+
+Hooks.PixelGrid = {
+  mounted() {
+    const grid = this.el
+    const size = 64 * 64  // 4096 pixels
+
+    // Create pixel divs once on mount
+    const fragment = document.createDocumentFragment()
+    for (let i = 0; i < size; i++) {
+      const div = document.createElement('div')
+      div.style.width = '6px'
+      div.style.height = '6px'
+      fragment.appendChild(div)
+    }
+    grid.appendChild(fragment)
+
+    // Handle pixel updates pushed from the server
+    this.handleEvent("pixels", ({data}) => {
+      const children = grid.children
+      const len = Math.min(data.length, children.length)
+      for (let i = 0; i < len; i++) {
+        const [r, g, b] = data[i]
+        if (r === 0 && g === 0 && b === 0) {
+          children[i].style.backgroundColor = '#000'
+        } else {
+          children[i].style.backgroundColor = `rgb(${r},${g},${b})`
+        }
+      }
+    })
+  }
+}
+
 const csrfToken = document
   .querySelector("meta[name='csrf-token']")
   .getAttribute("content");
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: { _csrf_token: csrfToken },
-  hooks: { ...colocatedHooks },
+  hooks: { ...Hooks, ...colocatedHooks },
 });
 
 // Show progress bar on live navigation and form submits

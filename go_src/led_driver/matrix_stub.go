@@ -31,7 +31,9 @@ func NewMatrix(config *MatrixConfig) (Matrix, error) {
 		pixels[i] = make([]stubPixel, w)
 	}
 
-	log.Printf("Stub matrix initialized: %dx%d, brightness=%d", w, h, config.Brightness)
+	if !previewIPC {
+		log.Printf("Stub matrix initialized: %dx%d, brightness=%d", w, h, config.Brightness)
+	}
 	return &StubMatrix{
 		width:      w,
 		height:     h,
@@ -59,20 +61,6 @@ func (m *StubMatrix) Clear() {
 	}
 }
 
-func (m *StubMatrix) Render() {
-	// Count non-black pixels for debug logging
-	count := 0
-	for y := range m.pixels {
-		for x := range m.pixels[y] {
-			p := m.pixels[y][x]
-			if p.r > 0 || p.g > 0 || p.b > 0 {
-				count++
-			}
-		}
-	}
-	log.Printf("Render: %d active pixels", count)
-}
+func (m *StubMatrix) Render() {}
 
-func (m *StubMatrix) Close() {
-	log.Println("Matrix closed")
-}
+func (m *StubMatrix) Close() {}

@@ -37,10 +37,24 @@ defmodule AeroVision.DB do
           {:ok, pid}
 
         {:error, {:already_started, pid}} ->
+          # CubDB process is already running on this directory (e.g. GenServer
+          # crashed and restarted while CubDB survived). Reuse it — data intact.
           {:ok, pid}
 
         {:error, reason} ->
-          {:corrupt, reason}
+          # Only treat ArgumentError (corrupt B-tree) as unrecoverable.
+          # Other errors (e.g. transient races) should not wipe the database.
+          case reason do
+            {%ArgumentError{}, _} ->
+              {:corrupt, reason}
+
+            %ArgumentError{} ->
+              {:corrupt, reason}
+
+            _ ->
+              Logger.warning("[DB] CubDB start failed for #{data_dir}: #{inspect(reason)}")
+              {:error, reason}
+          end
       end
 
     # Drain any EXIT message that may have arrived
@@ -59,11 +73,16 @@ defmodule AeroVision.DB do
 
       {:corrupt, reason} ->
         Logger.error(
-          "[DB] CubDB failed to open #{data_dir}: #{inspect(reason)}. " <>
-            "Wiping and recreating."
+          "[DB] CubDB B-tree corrupt at #{data_dir}: #{inspect(reason)}. " <>
+            "Wiping and recreating — data in this database will be lost."
         )
 
         wipe_and_retry(data_dir, opts)
+
+      {:error, reason} ->
+        # Non-corruption failure — raise so the supervisor can retry rather
+        # than silently wiping good data.
+        raise "CubDB failed to open #{data_dir}: #{inspect(reason)}"
     end
   end
 
