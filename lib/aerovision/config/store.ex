@@ -23,6 +23,7 @@ defmodule AeroVision.Config.Store do
     radius_km: 40.234,
     tracked_flights: [],
     airline_filters: [],
+    airport_filters: [],
     display_brightness: 80,
     display_cycle_seconds: 8,
     display_mode: :nearby,

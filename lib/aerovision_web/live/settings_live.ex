@@ -32,6 +32,7 @@ defmodule AeroVisionWeb.SettingsLive do
        # Flights
        tracked_flights: config.tracked_flights,
        airline_filters: config.airline_filters,
+       airport_filters: config.airport_filters,
        # API Keys
        opensky_client_id: config.opensky_client_id || "",
        opensky_client_secret: config.opensky_client_secret || "",
@@ -181,6 +182,26 @@ defmodule AeroVisionWeb.SettingsLive do
     updated = Enum.reject(socket.assigns.airline_filters, &(&1 == prefix))
     Store.put(:airline_filters, updated)
     {:noreply, assign(socket, airline_filters: updated)}
+  end
+
+  # ---- Airport Filters --------------------------------------------------------
+
+  def handle_event("add_airport_filter", %{"code" => code}, socket) do
+    code = code |> String.upcase() |> String.trim()
+
+    if code != "" and code not in socket.assigns.airport_filters do
+      updated = socket.assigns.airport_filters ++ [code]
+      Store.put(:airport_filters, updated)
+      {:noreply, assign(socket, airport_filters: updated)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("remove_airport_filter", %{"code" => code}, socket) do
+    updated = Enum.reject(socket.assigns.airport_filters, &(&1 == code))
+    Store.put(:airport_filters, updated)
+    {:noreply, assign(socket, airport_filters: updated)}
   end
 
   # ---- API Keys ---------------------------------------------------------------
@@ -452,7 +473,53 @@ defmodule AeroVisionWeb.SettingsLive do
           </div>
         </.settings_card>
         
-    <!-- 5. Display Settings -->
+    <!-- 5. Airport Filters -->
+        <.settings_card title="Airport Filters" icon="🛬">
+          <div class="space-y-3">
+            <p class="text-xs text-gray-500">
+              Show only flights departing or arriving at these airports. Accepts IATA (e.g. <span class="font-mono text-gray-400">RDU</span>) or ICAO codes (e.g. <span class="font-mono text-gray-400">KRDU</span>). Requires AeroAPI enrichment.
+            </p>
+            <form phx-submit="add_airport_filter" class="flex gap-2">
+              <input
+                type="text"
+                name="code"
+                value=""
+                class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                placeholder="RDU"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="characters"
+                phx-debounce="200"
+              />
+              <button
+                type="submit"
+                class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
+              >
+                Add
+              </button>
+            </form>
+            <%= if @airport_filters == [] do %>
+              <p class="text-sm text-gray-600 italic">No filters active — all airports shown.</p>
+            <% else %>
+              <div class="flex flex-wrap gap-2">
+                <%= for code <- @airport_filters do %>
+                  <div class="flex items-center gap-1.5 px-2.5 py-1 bg-gray-800 rounded-full border border-gray-700">
+                    <span class="font-mono text-sm text-cyan-300">{code}</span>
+                    <button
+                      phx-click="remove_airport_filter"
+                      phx-value-code={code}
+                      class="text-gray-500 hover:text-red-400 transition-colors leading-none"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
+        </.settings_card>
+        
+    <!-- 6. Display Settings -->
         <.settings_card title="Display Settings" icon="💡">
           <.form
             for={%{}}

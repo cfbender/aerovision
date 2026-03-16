@@ -488,4 +488,160 @@ defmodule AeroVision.Flight.TrackerTest do
     broadcast_config(:display_brightness, 50)
     refute_receive {:display_flights, _}, 100
   end
+
+  # ── filtering: airport filters ──────────────────────────────────────────────
+
+  defp fi_with_airports(origin_iata, dest_iata) do
+    now = DateTime.utc_now()
+
+    %FlightInfo{
+      ident: "AAL1234",
+      operator: "AAL",
+      airline_name: "American Airlines",
+      aircraft_type: "B738",
+      aircraft_name: nil,
+      origin: %Airport{icao: "K" <> origin_iata, iata: origin_iata, name: origin_iata, city: nil},
+      destination: %Airport{
+        icao: "K" <> dest_iata,
+        iata: dest_iata,
+        name: dest_iata,
+        city: nil
+      },
+      departure_time: DateTime.add(now, -3600),
+      actual_departure_time: nil,
+      arrival_time: DateTime.add(now, 3600),
+      progress_pct: nil,
+      cached_at: now
+    }
+  end
+
+  test "airport filter passes unenriched flights (pending enrichment)" do
+    broadcast_config(:airport_filters, ["RDU"])
+    assert_receive {:display_flights, _}
+
+    # Raw flight with no enrichment yet — should pass airport filter
+    broadcast_raw([sv("AAL1234")])
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    assert "AAL1234" in callsigns
+  end
+
+  test "airport filter shows flight departing matching airport after enrichment" do
+    broadcast_config(:airport_filters, ["RDU"])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("AAL1234")])
+    assert_receive {:display_flights, _}
+
+    # Enrich with RDU origin
+    broadcast_enriched("AAL1234", fi_with_airports("RDU", "LAX"))
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    assert "AAL1234" in callsigns
+  end
+
+  test "airport filter shows flight arriving at matching airport after enrichment" do
+    broadcast_config(:airport_filters, ["RDU"])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("DAL567")])
+    assert_receive {:display_flights, _}
+
+    # Enrich with RDU destination
+    info = %{fi_with_airports("ATL", "RDU") | ident: "DAL567"}
+    broadcast_enriched("DAL567", info)
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    assert "DAL567" in callsigns
+  end
+
+  test "airport filter hides enriched flight not matching any airport" do
+    broadcast_config(:airport_filters, ["RDU"])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("UAL890")])
+    assert_receive {:display_flights, _}
+
+    # Enrich with non-RDU airports — should be filtered out
+    info = %{fi_with_airports("ORD", "LAX") | ident: "UAL890"}
+    broadcast_enriched("UAL890", info)
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    refute "UAL890" in callsigns
+  end
+
+  test "airport filter accepts ICAO codes" do
+    broadcast_config(:airport_filters, ["KRDU"])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("AAL1234")])
+    assert_receive {:display_flights, _}
+
+    broadcast_enriched("AAL1234", fi_with_airports("RDU", "CLT"))
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    assert "AAL1234" in callsigns
+  end
+
+  test "airport filter is case-insensitive" do
+    broadcast_config(:airport_filters, ["rdu"])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("AAL1234")])
+    assert_receive {:display_flights, _}
+
+    broadcast_enriched("AAL1234", fi_with_airports("RDU", "CLT"))
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    assert "AAL1234" in callsigns
+  end
+
+  test "airport filter stacks with airline filter — must pass both" do
+    # Only DAL flights to/from RDU
+    broadcast_config(:airline_filters, ["DAL"])
+    assert_receive {:display_flights, _}
+    broadcast_config(:airport_filters, ["RDU"])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("AAL1234"), sv("DAL567")])
+    assert_receive {:display_flights, _}
+
+    # AAL doesn't match airline filter → excluded even though it goes to RDU
+    broadcast_enriched("AAL1234", fi_with_airports("RDU", "CLT"))
+    assert_receive {:display_flights, _}
+
+    # DAL to RDU → matches both filters → included
+    info_dal = %{fi_with_airports("ATL", "RDU") | ident: "DAL567"}
+    broadcast_enriched("DAL567", info_dal)
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    assert "DAL567" in callsigns
+    refute "AAL1234" in callsigns
+  end
+
+  test "empty airport filter shows all flights" do
+    broadcast_config(:airport_filters, [])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("AAL1234"), sv("DAL567")])
+    assert_receive {:display_flights, flights}
+
+    assert length(flights) == 2
+  end
+
+  test "{:config_changed, :airport_filters, ...} updates filters and broadcasts" do
+    broadcast_raw([sv("AAL1234")])
+    assert_receive {:display_flights, [_]}
+
+    broadcast_config(:airport_filters, ["RDU"])
+    assert_receive {:display_flights, _}
+    assert Process.alive?(GenServer.whereis(Tracker))
+  end
 end

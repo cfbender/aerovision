@@ -103,6 +103,7 @@ defmodule AeroVision.Flight.Tracker do
       mode: Store.get(:display_mode),
       tracked_flights: Store.get(:tracked_flights),
       airline_filters: Store.get(:airline_filters),
+      airport_filters: Store.get(:airport_filters),
       cleanup_timer: nil
     }
 
@@ -230,8 +231,25 @@ defmodule AeroVision.Flight.Tracker do
 
   @impl true
   def handle_info({:config_changed, :airline_filters, value}, state) do
-    new_state = %{state | airline_filters: value}
-    request_missing_enrichment(new_state)
+    new_state =
+      %{state | airline_filters: value}
+      |> merge_cached_enrichment()
+
+    CubDB.put(new_state.db, @cache_key, new_state.flights)
+    broadcast_display(new_state)
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info({:config_changed, :airport_filters, value}, state) do
+    # Pull cached enrichment data from ETS into state immediately so the
+    # airport filter can act on it right now, without waiting for the
+    # next AeroAPI tick.
+    new_state =
+      %{state | airport_filters: value}
+      |> merge_cached_enrichment()
+
+    CubDB.put(new_state.db, @cache_key, new_state.flights)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -273,8 +291,42 @@ defmodule AeroVision.Flight.Tracker do
 
   # ──────────────────────────────────────────────── enrichment gating ──
 
-  # Only request AeroAPI enrichment for flights that will actually be displayed.
-  # This keeps API usage proportional to what's on screen.
+  # Pull cached FlightInfo from the AeroAPI ETS table into any tracked flights
+  # that are missing enrichment. This is called synchronously when filter
+  # config changes so the new filter can act on cached data immediately,
+  # without waiting for the next AeroAPI tick.
+  # For cache misses, queues an enrichment request as usual.
+  defp merge_cached_enrichment(state) do
+    updated_flights =
+      Map.new(state.flights, fn {callsign, tracked} ->
+        cond do
+          tracked.flight_info != nil ->
+            # Already enriched — nothing to do
+            {callsign, tracked}
+
+          is_nil(callsign) ->
+            {callsign, tracked}
+
+          true ->
+            case AeroAPI.get_cached(callsign) do
+              nil ->
+                # Not in cache — queue enrichment for later
+                if should_enrich?(callsign, state) do
+                  AeroAPI.enrich(callsign)
+                end
+
+                {callsign, tracked}
+
+              %FlightInfo{} = info ->
+                progress = calculate_progress(tracked.state_vector, info)
+                enriched = %{info | progress_pct: progress}
+                {callsign, %{tracked | flight_info: enriched}}
+            end
+        end
+      end)
+
+    %{state | flights: updated_flights}
+  end
 
   # For each flight currently in state that passes the active filter but has no
   # enrichment, request AeroAPI enrichment. Called after filter config changes.
@@ -294,6 +346,10 @@ defmodule AeroVision.Flight.Tracker do
     Enum.any?(tracked_list, &callsign_matches?(callsign, &1))
   end
 
+  # If airport filters are active in nearby mode, we must enrich ALL flights
+  # because airport data only comes from enrichment — we can't pre-filter.
+  defp should_enrich?(_callsign, %{mode: :nearby, airport_filters: [_ | _]}), do: true
+
   defp should_enrich?(_callsign, %{mode: :nearby, airline_filters: []}), do: true
 
   defp should_enrich?(callsign, %{mode: :nearby, airline_filters: filters}) do
@@ -306,10 +362,16 @@ defmodule AeroVision.Flight.Tracker do
 
   # ───────────────────────────────────────────────────────── filter logic ──
 
-  defp filtered_flights(%{mode: :nearby, airline_filters: filters, flights: flights}) do
+  defp filtered_flights(%{
+         mode: :nearby,
+         airline_filters: airline_filters,
+         airport_filters: airport_filters,
+         flights: flights
+       }) do
     flights
     |> Map.values()
-    |> filter_by_airline(filters)
+    |> filter_by_airline(airline_filters)
+    |> filter_by_airport(airport_filters)
     |> top_flights()
   end
 
@@ -349,6 +411,35 @@ defmodule AeroVision.Flight.Tracker do
       callsign = tracked.state_vector.callsign || ""
       Enum.any?(filters, &String.starts_with?(callsign, &1))
     end)
+  end
+
+  # Empty airport filter list → show everything
+  defp filter_by_airport(flights, []), do: flights
+
+  defp filter_by_airport(flights, filters) do
+    normalized = Enum.map(filters, &String.upcase(String.trim(&1)))
+
+    Enum.filter(flights, fn tracked ->
+      case tracked.flight_info do
+        nil ->
+          # Not yet enriched — keep it (will be filtered on enrichment arrival)
+          true
+
+        %FlightInfo{origin: origin, destination: destination} ->
+          (airport_codes(origin) ++ airport_codes(destination))
+          |> Enum.any?(fn code -> code in normalized end)
+      end
+    end)
+  end
+
+  # Extract all non-nil airport codes (IATA + ICAO) from an Airport struct.
+  defp airport_codes(nil), do: []
+
+  defp airport_codes(airport) do
+    [airport.iata, airport.icao]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&String.upcase/1)
   end
 
   # Case-insensitive prefix match (e.g. "AAL1234" matches tracked entry "AAL1234")
