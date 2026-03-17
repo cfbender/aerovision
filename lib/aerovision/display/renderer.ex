@@ -29,7 +29,7 @@ defmodule AeroVision.Display.Renderer do
   @ap_ip "192.168.24.1"
 
   # Modes that mean "not connected to WiFi yet" — QR is suppressed in these.
-  @no_wifi_modes [:ap, :connecting, :loading]
+  @no_wifi_modes [:ap, :connecting, :loading, :disconnected]
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -92,7 +92,7 @@ defmodule AeroVision.Display.Renderer do
     state =
       cond do
         # Network-state modes are never overridden by flight data
-        state.mode in [:qr, :ap, :connecting] ->
+        state.mode in [:qr, :ap, :connecting, :disconnected] ->
           state
 
         flights == [] ->
@@ -157,10 +157,18 @@ defmodule AeroVision.Display.Renderer do
     {:noreply, state}
   end
 
+  def handle_info({:network, :disconnected}, state) do
+    Logger.info("[Display.Renderer] WiFi disconnected — showing error screen")
+    state = cancel_qr_timer(state)
+    state = %{state | mode: :disconnected, connecting_ssid: nil}
+    state = render(state)
+    {:noreply, state}
+  end
+
   def handle_info({:network, :connected, _ip}, state) do
     # Connected — clear connecting state, resume normal display
     state =
-      if state.mode in [:ap, :connecting] do
+      if state.mode in [:ap, :connecting, :disconnected] do
         %{
           state
           | mode: if(state.flights == [], do: :loading, else: :flights),
@@ -263,6 +271,8 @@ defmodule AeroVision.Display.Renderer do
 
   defp build_command(%{mode: :connecting, connecting_ssid: ssid}),
     do: %{cmd: "connecting_screen", ssid: ssid || "WiFi"}
+
+  defp build_command(%{mode: :disconnected}), do: %{cmd: "wifi_error"}
 
   defp build_command(%{mode: :qr}) do
     ip = NetworkManager.current_ip() || "aerovision.local"

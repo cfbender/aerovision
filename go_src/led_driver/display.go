@@ -70,6 +70,9 @@ func (d *Display) HandleCommand(cmd Command) {
 	case "connecting_screen":
 		d.renderConnectingScreen(cmd)
 		sendResponse("ok", "")
+	case "wifi_error":
+		d.renderWifiError()
+		sendResponse("ok", "")
 	case "ping":
 		sendResponse("ok", "")
 	default:
@@ -367,6 +370,80 @@ func (d *Display) renderConnectingScreen(cmd Command) {
 	drawStringSmall(d.matrix, 2, 42, "This page will", gray[0], gray[1], gray[2])
 	drawStringSmall(d.matrix, 2, 49, "disconnect.", gray[0], gray[1], gray[2])
 	drawStringSmall(d.matrix, 2, 56, "aerovision.local", cyan[0], cyan[1], cyan[2])
+
+	d.matrix.Render()
+}
+
+// renderWifiError shows a static "WiFi disconnected" error screen.
+func (d *Display) renderWifiError() {
+	d.matrix.Clear()
+
+	red := [3]uint8{255, 60, 60}
+	dimRed := [3]uint8{120, 20, 20}
+	gray := [3]uint8{120, 120, 120}
+	cyan := [3]uint8{0, 200, 220}
+	slashRed := [3]uint8{255, 40, 40}
+
+	// ── WiFi icon (centered, ~16px wide, at y=2) ─────────────────────────
+	cx := 32 // center x of the icon
+
+	// Outer arc (radius ~7) — a few key pixels to suggest the widest arc
+	for _, pt := range [][2]int{
+		{-6, 6}, {-5, 5}, {-4, 4}, {-3, 3}, {-2, 3},
+		{2, 3}, {3, 3}, {4, 4}, {5, 5}, {6, 6},
+	} {
+		d.matrix.SetPixel(cx+pt[0], 2+pt[1]-3, dimRed[0], dimRed[1], dimRed[2])
+	}
+
+	// Middle arc (radius ~4)
+	for _, pt := range [][2]int{
+		{-4, 6}, {-3, 5}, {-2, 4},
+		{2, 4}, {3, 5}, {4, 6},
+	} {
+		d.matrix.SetPixel(cx+pt[0], 2+pt[1]-1, dimRed[0], dimRed[1], dimRed[2])
+	}
+
+	// Inner arc (radius ~2)
+	for _, pt := range [][2]int{
+		{-2, 6}, {-1, 5},
+		{1, 5}, {2, 6},
+	} {
+		d.matrix.SetPixel(cx+pt[0], 2+pt[1]+1, dimRed[0], dimRed[1], dimRed[2])
+	}
+
+	// Base dot (2×2 block)
+	d.matrix.SetPixel(cx, 12, dimRed[0], dimRed[1], dimRed[2])
+	d.matrix.SetPixel(cx+1, 12, dimRed[0], dimRed[1], dimRed[2])
+	d.matrix.SetPixel(cx, 13, dimRed[0], dimRed[1], dimRed[2])
+	d.matrix.SetPixel(cx+1, 13, dimRed[0], dimRed[1], dimRed[2])
+
+	// X slash across the icon (two diagonals from top-left↔bottom-right)
+	for i := 0; i < 14; i++ {
+		x := cx - 6 + i
+		y := 2 + i
+		if x >= 0 && x < 64 && y >= 0 && y < 64 {
+			d.matrix.SetPixel(x, y, slashRed[0], slashRed[1], slashRed[2])
+		}
+		x2 := cx + 6 - i
+		if x2 >= 0 && x2 < 64 && y >= 0 && y < 64 {
+			d.matrix.SetPixel(x2, y, slashRed[0], slashRed[1], slashRed[2])
+		}
+	}
+
+	// ── "NO WIFI" text — centered, large font, red ───────────────────────
+	noWifiStr := "NO WIFI"
+	noWifiW := stringWidth(noWifiStr)
+	drawString(d.matrix, (64-noWifiW)/2, 18, noWifiStr, red[0], red[1], red[2])
+
+	// ── Divider ──────────────────────────────────────────────────────────
+	for x := 2; x <= 61; x++ {
+		d.matrix.SetPixel(x, 29, 40, 40, 40)
+	}
+
+	// ── Help text — small font ───────────────────────────────────────────
+	drawStringSmall(d.matrix, 2, 34, "Check router or", gray[0], gray[1], gray[2])
+	drawStringSmall(d.matrix, 2, 42, "hold reset 3s", gray[0], gray[1], gray[2])
+	drawStringSmall(d.matrix, 2, 50, "for setup wifi", cyan[0], cyan[1], cyan[2])
 
 	d.matrix.Render()
 }

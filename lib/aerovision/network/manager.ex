@@ -375,6 +375,7 @@ defmodule AeroVision.Network.Manager do
       "[Network.Manager] Disconnected — starting #{@reconnect_timeout_ms}ms fallback timer"
     )
 
+    Phoenix.PubSub.broadcast(@pubsub, @topic, {:network, :disconnected})
     state = cancel_reconnect_timer(state)
     timer = Process.send_after(self(), :reconnect_timeout, @reconnect_timeout_ms)
     %{state | mode: :disconnected, reconnect_timer: timer}
