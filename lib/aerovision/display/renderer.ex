@@ -19,6 +19,7 @@ defmodule AeroVision.Display.Renderer do
 
   alias AeroVision.Config.Store
   alias AeroVision.Display.Driver
+  alias AeroVision.Flight.AircraftCodes
   alias AeroVision.Network.Manager, as: NetworkManager
 
   @pubsub AeroVision.PubSub
@@ -314,10 +315,10 @@ defmodule AeroVision.Display.Renderer do
   defp flight_ident(nil, sv), do: sv.callsign
   defp flight_ident(fi, sv), do: fi.ident || sv.callsign
 
-  defp aircraft_type(nil, sv), do: abbreviate_aircraft_type(sv.aircraft_type_name) || "---"
+  defp aircraft_type(nil, sv), do: AircraftCodes.abbreviate(sv.aircraft_type_name) || "---"
 
   defp aircraft_type(fi, sv),
-    do: fi.aircraft_type || abbreviate_aircraft_type(sv.aircraft_type_name) || "---"
+    do: fi.aircraft_type || AircraftCodes.abbreviate(sv.aircraft_type_name) || "---"
 
   defp airport_code(nil), do: nil
   defp airport_code(airport), do: airport.iata || airport.icao
@@ -338,46 +339,6 @@ defmodule AeroVision.Display.Renderer do
   end
 
   defp derive_operator(_, _), do: nil
-
-  # Convert full aircraft type names from Skylink to ICAO-style short codes.
-  # "Boeing 737-800" → "B738", "Airbus A321-200" → "A321", "Embraer E175" → "E175"
-  defp abbreviate_aircraft_type(nil), do: nil
-
-  defp abbreviate_aircraft_type(name) when is_binary(name) do
-    abbreviate_boeing(name) ||
-      abbreviate_airbus(name) ||
-      abbreviate_embraer(name) ||
-      abbreviate_crj(name)
-  end
-
-  defp abbreviate_boeing(name) do
-    case Regex.run(~r/Boeing\s+(\d{3})(?:[- ](\d))?/i, name) do
-      [_, model, variant_digit] -> "B#{String.slice(model, 0, 2)}#{variant_digit}"
-      [_, model] -> "B#{model}"
-      _ -> nil
-    end
-  end
-
-  defp abbreviate_airbus(name) do
-    case Regex.run(~r/(A\d{3})/i, name) do
-      [_, code] -> String.upcase(code)
-      _ -> nil
-    end
-  end
-
-  defp abbreviate_embraer(name) do
-    case Regex.run(~r/(E\d{2,3})/i, name) do
-      [_, code] -> String.upcase(code)
-      _ -> nil
-    end
-  end
-
-  defp abbreviate_crj(name) do
-    case Regex.run(~r/CRJ[- ]?(\d)/i, name) do
-      [_, digit] -> "CRJ#{digit}"
-      _ -> nil
-    end
-  end
 
   # ---------------------------------------------------------------------------
   # Helper functions

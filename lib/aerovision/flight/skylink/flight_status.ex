@@ -172,11 +172,18 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     :ets.delete_all_objects(@cache_table)
 
     # Clear callsign-keyed entries from CubDB (preserve monthly call counters)
-    CubDB.select(state.db)
-    |> Enum.each(fn
-      {key, _} when is_binary(key) -> CubDB.delete(state.db, key)
-      _ -> :ok
-    end)
+    # Collect all string keys, then delete in one batch operation for better performance
+    keys_to_delete =
+      CubDB.select(state.db)
+      |> Enum.filter(fn
+        {key, _} when is_binary(key) -> true
+        _ -> false
+      end)
+      |> Enum.map(fn {key, _} -> key end)
+
+    if keys_to_delete != [] do
+      CubDB.delete_multi(state.db, keys_to_delete)
+    end
 
     Logger.info("[Skylink.FlightStatus] Cache purged")
     {:reply, :ok, state}

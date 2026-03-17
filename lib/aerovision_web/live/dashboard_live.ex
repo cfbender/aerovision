@@ -2,6 +2,7 @@ defmodule AeroVisionWeb.DashboardLive do
   use AeroVisionWeb, :live_view
 
   alias AeroVision.Flight.Tracker
+  alias AeroVision.Flight.AircraftCodes
 
   @impl true
   def mount(_params, _session, socket) do
@@ -221,7 +222,7 @@ defmodule AeroVisionWeb.DashboardLive do
      )}
   end
 
-  # ---- Render -----------------------------------------------------------------
+  # ---- Render Functions -------------------------------------------------------
 
   @impl true
   def render(assigns) do
@@ -668,7 +669,7 @@ defmodule AeroVisionWeb.DashboardLive do
         callsign: sv.callsign || "---",
         airline: (fi && fi.airline_name) || "Unknown",
         aircraft:
-          (fi && fi.aircraft_type) || abbreviate_aircraft_type(sv && sv.aircraft_type_name) ||
+          (fi && fi.aircraft_type) || AircraftCodes.abbreviate(sv && sv.aircraft_type_name) ||
             "---",
         altitude: format_altitude(sv.baro_altitude),
         speed: format_speed(sv.velocity),
@@ -736,7 +737,7 @@ defmodule AeroVisionWeb.DashboardLive do
     """
   end
 
-  # ---- Private Helpers --------------------------------------------------------
+  # ---- Private Helper Functions -----------------------------------------------
 
   @on_target Application.compile_env(:aerovision, :target, :host) != :host
 
@@ -801,46 +802,6 @@ defmodule AeroVisionWeb.DashboardLive do
   defp format_airport(%{iata: iata}) when is_binary(iata) and iata != "", do: iata
   defp format_airport(%{icao: icao}) when is_binary(icao), do: icao
   defp format_airport(_), do: "---"
-
-  # Convert full aircraft type names from Skylink to ICAO-style short codes.
-  # "Boeing 737-800" → "B738", "Airbus A321-200" → "A321", "Embraer E175" → "E175"
-  defp abbreviate_aircraft_type(nil), do: nil
-
-  defp abbreviate_aircraft_type(name) when is_binary(name) do
-    abbreviate_boeing(name) ||
-      abbreviate_airbus(name) ||
-      abbreviate_embraer(name) ||
-      abbreviate_crj(name)
-  end
-
-  defp abbreviate_boeing(name) do
-    case Regex.run(~r/Boeing\s+(\d{3})(?:[- ](\d))?/i, name) do
-      [_, model, variant_digit] -> "B#{String.slice(model, 0, 2)}#{variant_digit}"
-      [_, model] -> "B#{model}"
-      _ -> nil
-    end
-  end
-
-  defp abbreviate_airbus(name) do
-    case Regex.run(~r/(A\d{3})/i, name) do
-      [_, code] -> String.upcase(code)
-      _ -> nil
-    end
-  end
-
-  defp abbreviate_embraer(name) do
-    case Regex.run(~r/(E\d{2,3})/i, name) do
-      [_, code] -> String.upcase(code)
-      _ -> nil
-    end
-  end
-
-  defp abbreviate_crj(name) do
-    case Regex.run(~r/CRJ[- ]?(\d)/i, name) do
-      [_, digit] -> "CRJ#{digit}"
-      _ -> nil
-    end
-  end
 
   # Format a number with comma thousands separators (avoids Number.Delimited dep)
   defp format_number(n) when is_integer(n) do

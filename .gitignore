@@ -26,6 +26,7 @@ aerovision-*.tar
 
 # Environment variables (contains API keys — never commit)
 .env
+.envrc
 
 # Editor
 .elixir_ls/

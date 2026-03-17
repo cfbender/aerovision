@@ -12,6 +12,7 @@ defmodule AeroVision.Flight.OpenSkyTest do
     assert Code.ensure_loaded?(AeroVision.Flight.OpenSky)
   end
 
+  @tag :capture_log
   test "does not poll when no credentials configured" do
     # Store.reset() leaves opensky_client_id and opensky_client_secret as nil
     # Starting the GenServer should not crash and should not attempt to fetch
