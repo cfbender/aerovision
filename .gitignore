@@ -12,9 +12,11 @@ aerovision-*.tar
 # Nerves
 /.nerves/
 /rootfs_overlay/tmp/
+/rootfs_overlay/usr/share/zoneinfo/
 
 # Phoenix
 /priv/static/assets/
+/priv/static/cache_manifest.json
 
 # Node
 /assets/node_modules/

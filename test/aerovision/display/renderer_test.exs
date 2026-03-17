@@ -1,6 +1,147 @@
 defmodule AeroVision.Display.RendererTest do
   use ExUnit.Case, async: true
   alias AeroVision.Display.Renderer
+  alias AeroVision.Flight.FlightInfo
+
+  # ──────────────────────────────────────────────── best_arrival_time/1 ──
+
+  describe "best_arrival_time/1" do
+    test "nil flight_info returns nil" do
+      assert Renderer.best_arrival_time(nil) == nil
+    end
+
+    test "returns scheduled arrival when no estimated is present" do
+      scheduled = ~U[2026-03-17 20:00:00Z]
+      fi = %FlightInfo{arrival_time: scheduled, estimated_arrival_time: nil}
+      assert Renderer.best_arrival_time(fi) == scheduled
+    end
+
+    test "returns estimated when it is well after departure (valid data)" do
+      departure = ~U[2026-03-17 17:00:00Z]
+      # 2 hours after departure — clearly valid
+      estimated = ~U[2026-03-17 19:00:00Z]
+      scheduled = ~U[2026-03-17 18:45:00Z]
+
+      fi = %FlightInfo{
+        departure_time: departure,
+        actual_departure_time: nil,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      assert Renderer.best_arrival_time(fi) == estimated
+    end
+
+    test "falls back to scheduled when estimated equals departure (bad API data)" do
+      departure = ~U[2026-03-17 17:00:00Z]
+      estimated = ~U[2026-03-17 17:00:00Z]
+      scheduled = ~U[2026-03-17 18:45:00Z]
+
+      fi = %FlightInfo{
+        departure_time: departure,
+        actual_departure_time: nil,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      assert Renderer.best_arrival_time(fi) == scheduled
+    end
+
+    test "falls back to scheduled when estimated is before departure (bad API data)" do
+      departure = ~U[2026-03-17 17:00:00Z]
+      estimated = ~U[2026-03-17 16:30:00Z]
+      scheduled = ~U[2026-03-17 18:45:00Z]
+
+      fi = %FlightInfo{
+        departure_time: departure,
+        actual_departure_time: nil,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      assert Renderer.best_arrival_time(fi) == scheduled
+    end
+
+    test "falls back to scheduled when estimated is within 15 minutes of departure" do
+      departure = ~U[2026-03-17 17:00:00Z]
+      # Only 14 minutes — too short to be a real flight
+      estimated = ~U[2026-03-17 17:14:00Z]
+      scheduled = ~U[2026-03-17 18:45:00Z]
+
+      fi = %FlightInfo{
+        departure_time: departure,
+        actual_departure_time: nil,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      assert Renderer.best_arrival_time(fi) == scheduled
+    end
+
+    test "falls back to scheduled when estimated is exactly 15 minutes after departure" do
+      departure = ~U[2026-03-17 17:00:00Z]
+      estimated = ~U[2026-03-17 17:15:00Z]
+      scheduled = ~U[2026-03-17 18:45:00Z]
+
+      fi = %FlightInfo{
+        departure_time: departure,
+        actual_departure_time: nil,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      # Boundary: exactly 15 min is not strictly greater, so still rejected
+      assert Renderer.best_arrival_time(fi) == scheduled
+    end
+
+    test "accepts estimated that is just over 15 minutes after departure" do
+      departure = ~U[2026-03-17 17:00:00Z]
+      estimated = ~U[2026-03-17 17:16:00Z]
+      scheduled = ~U[2026-03-17 18:45:00Z]
+
+      fi = %FlightInfo{
+        departure_time: departure,
+        actual_departure_time: nil,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      assert Renderer.best_arrival_time(fi) == estimated
+    end
+
+    test "prefers actual_departure_time over scheduled departure for the comparison" do
+      # Scheduled says 17:00 but it actually left at 17:30 (delayed)
+      scheduled_dep = ~U[2026-03-17 17:00:00Z]
+      actual_dep = ~U[2026-03-17 17:30:00Z]
+      # Estimated arrival is 17:40 — only 10 min after actual departure, so invalid
+      estimated = ~U[2026-03-17 17:40:00Z]
+      scheduled = ~U[2026-03-17 19:00:00Z]
+
+      fi = %FlightInfo{
+        departure_time: scheduled_dep,
+        actual_departure_time: actual_dep,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      assert Renderer.best_arrival_time(fi) == scheduled
+    end
+
+    test "trusts estimated arrival when no departure time is known" do
+      estimated = ~U[2026-03-17 19:00:00Z]
+      scheduled = ~U[2026-03-17 18:45:00Z]
+
+      fi = %FlightInfo{
+        departure_time: nil,
+        actual_departure_time: nil,
+        estimated_arrival_time: estimated,
+        arrival_time: scheduled
+      }
+
+      # Without a departure reference we can't validate, so trust the estimate
+      assert Renderer.best_arrival_time(fi) == estimated
+    end
+  end
 
   # ──────────────────────────────────────────────── format_time/2 ──
 

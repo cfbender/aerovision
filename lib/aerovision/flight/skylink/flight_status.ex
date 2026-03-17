@@ -27,6 +27,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   alias AeroVision.Flight.FlightInfo
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.AirportTimezones
+  alias AeroVision.TimeSync
 
   @pubsub AeroVision.PubSub
   @topic "flights"
@@ -41,6 +42,10 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
   @base_url "https://skylink-api.p.rapidapi.com"
   @api_host "skylink-api.p.rapidapi.com"
+
+  # Bump this when cached data must be invalidated on next boot
+  # (e.g. after fixing time-zone conversion bugs that produced bad timestamps).
+  @cache_version 2
 
   # Months mapping for parsing Skylink's "11 Feb" style date strings
   @months %{
@@ -149,6 +154,27 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
         :ok
     end)
 
+    # Check cache version — if stale, wipe enrichment data so incorrectly-stored
+    # entries (e.g. local times stored as UTC before zoneinfo fix) don't linger.
+    stored_version = CubDB.get(db, :cache_version, 0)
+
+    if stored_version < @cache_version do
+      Logger.info(
+        "[Skylink.FlightStatus] Cache version #{stored_version} < #{@cache_version} — clearing stale enrichment data"
+      )
+
+      :ets.delete_all_objects(@cache_table)
+
+      # Clear only string (callsign) keys; preserve system keys like {:calls, month} and :cache_version
+      string_keys =
+        CubDB.select(db)
+        |> Enum.filter(fn {key, _} -> is_binary(key) end)
+        |> Enum.map(fn {key, _} -> key end)
+
+      if string_keys != [], do: CubDB.delete_multi(db, string_keys)
+      CubDB.put(db, :cache_version, @cache_version)
+    end
+
     # Read monthly call count
     month_key = month_key()
     call_count = CubDB.get(db, {:calls, month_key}, 0)
@@ -241,6 +267,10 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
   defp do_fetch(callsign, state) do
     cond do
+      not TimeSync.synchronized?() ->
+        Logger.debug("[Skylink.FlightStatus] Clock not synced — deferring #{callsign}")
+        %{state | queue: MapSet.put(state.queue, callsign)}
+
       not credentials_configured?() ->
         Logger.warning(
           "[Skylink.FlightStatus] No API key configured, skipping enrichment for #{callsign}"
@@ -352,6 +382,18 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
           parse_datetime(
             get_in(body, ["arrival", "scheduled_time"]),
             get_in(body, ["arrival", "scheduled_date"]),
+            arr_tz
+          ),
+        estimated_departure_time:
+          parse_datetime(
+            get_in(body, ["departure", "estimated_time"]),
+            get_in(body, ["departure", "estimated_date"]),
+            dep_tz
+          ),
+        estimated_arrival_time:
+          parse_datetime(
+            get_in(body, ["arrival", "estimated_time"]),
+            get_in(body, ["arrival", "estimated_date"]),
             arr_tz
           ),
         cached_at: DateTime.utc_now()

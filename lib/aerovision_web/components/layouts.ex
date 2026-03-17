@@ -16,36 +16,52 @@ defmodule AeroVisionWeb.Layouts do
       </Layouts.app>
   """
   attr :flash, :map, required: true
+  attr :fullscreen, :boolean, default: false
   slot :inner_block, required: true
 
   def app(assigns) do
     ~H"""
-    <header class="bg-gray-900 border-b border-gray-800">
-      <nav class="mx-auto flex max-w-7xl items-center justify-between p-4">
-        <div class="flex items-center gap-4">
-          <.link
-            navigate={~p"/"}
-            class="text-xl font-bold text-cyan-400 hover:text-cyan-300 transition-colors"
-          >
-            ✈ AeroVision
-          </.link>
-        </div>
-        <div class="flex items-center gap-6 text-sm">
-          <.link navigate={~p"/"} class="text-gray-300 hover:text-white transition-colors">
-            Dashboard
-          </.link>
-          <.link navigate={~p"/preview"} class="text-gray-300 hover:text-white transition-colors">
-            Preview
-          </.link>
-          <.link navigate={~p"/settings"} class="text-gray-300 hover:text-white transition-colors">
-            Settings
-          </.link>
-        </div>
-      </nav>
-    </header>
-    <main class="mx-auto max-w-7xl px-4 py-8">
-      {render_slot(@inner_block)}
-    </main>
+    <div class={@fullscreen && "h-screen flex flex-col"}>
+      <header class="shrink-0 bg-gray-900 border-b border-gray-800">
+        <nav class="mx-auto flex max-w-7xl items-center justify-between p-4">
+          <div class="flex items-center gap-4">
+            <.link
+              navigate={~p"/"}
+              class="text-xl font-bold text-cyan-400 hover:text-cyan-300 transition-colors"
+            >
+              ✈ AeroVision
+            </.link>
+          </div>
+          <div class="flex items-center gap-6 text-sm">
+            <.link navigate={~p"/"} class="text-gray-300 hover:text-white transition-colors">
+              Dashboard
+            </.link>
+            <%= if Application.get_env(:aerovision, :target, :host) == :host do %>
+              <.link
+                navigate={~p"/preview"}
+                class="text-gray-300 hover:text-white transition-colors"
+              >
+                Preview
+              </.link>
+            <% end %>
+            <.link navigate={~p"/settings"} class="text-gray-300 hover:text-white transition-colors">
+              Settings
+            </.link>
+            <%= if Application.get_env(:aerovision, :target, :host) != :host do %>
+              <.link navigate={~p"/logs"} class="text-gray-300 hover:text-white transition-colors">
+                Logs
+              </.link>
+            <% end %>
+          </div>
+        </nav>
+      </header>
+      <main class={[
+        "mx-auto w-full max-w-7xl px-4",
+        if(@fullscreen, do: "flex-1 min-h-0 overflow-hidden", else: "py-8")
+      ]}>
+        {render_slot(@inner_block)}
+      </main>
+    </div>
     <.flash_group flash={@flash} />
     """
   end

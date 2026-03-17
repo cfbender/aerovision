@@ -324,6 +324,28 @@ defmodule AeroVision.Display.RendererGenServerTest do
     assert :sys.get_state(pid).mode == :loading
   end
 
+  # ── stale current_index guard ────────────────────────────────────────────────
+
+  test "does not crash when flights list shrinks and current_index is out of bounds" do
+    pid = GenServer.whereis(Renderer)
+    flight1 = tracked_flight("AAL001")
+    flight2 = tracked_flight("AAL002")
+
+    # Start with 2 flights, advance cycle to index 1
+    send(pid, {:display_flights, [flight1, flight2]})
+    :sys.get_state(pid)
+    send(pid, :cycle_tick)
+    :sys.get_state(pid)
+    assert :sys.get_state(pid).current_index == 1
+
+    # Now shrink to 1 flight — index 1 is out of bounds, Enum.at returns nil
+    send(pid, {:display_flights, [flight1]})
+    :sys.get_state(pid)
+
+    assert Process.alive?(pid)
+    assert :sys.get_state(pid).mode == :flights
+  end
+
   # ── network events ───────────────────────────────────────────────────────────
 
   test "{:network, :connected, ip} is handled without crash" do

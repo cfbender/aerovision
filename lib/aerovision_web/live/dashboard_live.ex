@@ -3,6 +3,7 @@ defmodule AeroVisionWeb.DashboardLive do
 
   alias AeroVision.Flight.Tracker
   alias AeroVision.Flight.AircraftCodes
+  alias AeroVision.Display.Renderer
 
   @impl true
   def mount(_params, _session, socket) do
@@ -665,6 +666,7 @@ defmodule AeroVisionWeb.DashboardLive do
   defp flight_card(assigns) do
     sv = assigns.flight.state_vector
     fi = assigns.flight.flight_info
+    timezone = AeroVision.Config.Store.get(:timezone)
 
     assigns =
       assign(assigns,
@@ -678,6 +680,8 @@ defmodule AeroVisionWeb.DashboardLive do
         bearing: format_bearing(sv.true_track),
         origin: format_airport(fi && fi.origin),
         destination: format_airport(fi && fi.destination),
+        dep_time: Renderer.format_time(Renderer.best_departure_time(fi), timezone),
+        arr_time: Renderer.format_time(Renderer.best_arrival_time(fi), timezone),
         progress: (fi && fi.progress_pct) || 0.0,
         on_ground: sv.on_ground || false
       )
@@ -698,11 +702,17 @@ defmodule AeroVisionWeb.DashboardLive do
         </div>
       </div>
 
-      <%!-- Route --%>
+      <%!-- Route with times --%>
       <div class="flex items-center gap-2 text-sm">
-        <span class="font-mono text-white font-medium">{@origin}</span>
-        <span class="text-gray-600 text-xs">──────▶</span>
-        <span class="font-mono text-white font-medium">{@destination}</span>
+        <div>
+          <div class="font-mono text-white font-medium">{@origin}</div>
+          <div class="font-mono text-xs text-gray-500">{@dep_time}</div>
+        </div>
+        <span class="text-gray-600 text-xs flex-1 text-center">──────▶</span>
+        <div class="text-right">
+          <div class="font-mono text-white font-medium">{@destination}</div>
+          <div class="font-mono text-xs text-gray-500">{@arr_time}</div>
+        </div>
       </div>
 
       <%!-- Telemetry grid --%>

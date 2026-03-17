@@ -295,9 +295,7 @@ defmodule AeroVision.Display.Renderer do
   # Flight card builder
   # ---------------------------------------------------------------------------
 
-  defp build_flight_card(flight) do
-    sv = flight.state_vector
-    fi = flight.flight_info
+  defp build_flight_card(%{state_vector: sv, flight_info: fi}) do
     timezone = Store.get(:timezone)
 
     %{
@@ -312,12 +310,14 @@ defmodule AeroVision.Display.Renderer do
       speed_kt: sv.velocity |> safe_round(),
       bearing_deg: sv.true_track |> safe_round(),
       vrate_fpm: sv.vertical_rate |> safe_round(),
-      dep_time: format_time(fi && fi.departure_time, timezone),
-      arr_time: format_time(fi && fi.arrival_time, timezone),
+      dep_time: format_time(best_departure_time(fi), timezone),
+      arr_time: format_time(best_arrival_time(fi), timezone),
       progress: (fi && fi.progress_pct) || 0.0,
       airline_color: [0, 200, 220]
     }
   end
+
+  defp build_flight_card(_), do: :noop
 
   defp airline_name(nil), do: nil
   defp airline_name(fi), do: fi.airline_name |> truncate(7) |> upcase_safe()
@@ -349,6 +349,32 @@ defmodule AeroVision.Display.Renderer do
   end
 
   defp derive_operator(_, _), do: nil
+
+  # Show actual departure if available, otherwise fall back to scheduled.
+  @doc false
+  def best_departure_time(nil), do: nil
+  def best_departure_time(fi), do: fi.actual_departure_time || fi.departure_time
+
+  # Show estimated arrival if available and sane. The Skylink API sometimes returns
+  # an estimated_arrival_time that is at or near the departure time (bad provider
+  # data). We require at least 15 minutes of flight time — no tracked flight should
+  # be shorter than that — before trusting the estimate. Falls back to scheduled.
+  @min_flight_duration_sec 15 * 60
+
+  @doc false
+  def best_arrival_time(nil), do: nil
+
+  def best_arrival_time(fi) do
+    estimated = fi.estimated_arrival_time
+    departure = fi.actual_departure_time || fi.departure_time
+
+    estimated_valid? =
+      not is_nil(estimated) and
+        (is_nil(departure) or
+           DateTime.diff(estimated, departure) > @min_flight_duration_sec)
+
+    if estimated_valid?, do: estimated, else: fi.arrival_time
+  end
 
   # ---------------------------------------------------------------------------
   # Helper functions

@@ -628,6 +628,114 @@ defmodule AeroVision.Flight.TrackerTest do
     refute "AAL1234" in callsigns
   end
 
+  # ── progress_pct recalculation ─────────────────────────────────────────────
+
+  describe "progress_pct" do
+    test "is recalculated on each ADS-B tick, not frozen at enrichment value" do
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      now = DateTime.utc_now()
+      # Enrich: departed 1h ago, arrives in 1h → ~50%
+      broadcast_enriched(
+        "AAL1234",
+        fi(dep: DateTime.add(now, -3600), arr: DateTime.add(now, 3600))
+      )
+
+      assert_receive {:display_flights, flights}
+      assert_in_delta hd(flights).flight_info.progress_pct, 0.5, 0.05
+
+      # Directly update the stored flight_info to simulate time passing:
+      # departure 7000s ago, arrival 200s ago → flight already complete, should cap at 1.0
+      pid = GenServer.whereis(Tracker)
+
+      :sys.replace_state(pid, fn state ->
+        Map.update!(state, :flights, fn fm ->
+          Map.update!(fm, "AAL1234", fn tracked ->
+            new_fi = %{
+              tracked.flight_info
+              | departure_time: DateTime.add(now, -7000),
+                arrival_time: DateTime.add(now, -200)
+            }
+
+            %{tracked | flight_info: new_fi}
+          end)
+        end)
+      end)
+
+      # Next tick should recalculate — not return the stale ~0.5
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, flights}
+      assert hd(flights).flight_info.progress_pct == 1.0
+    end
+
+    test "ignores estimated_arrival within 15 min of departure, falls back to scheduled" do
+      broadcast_raw([sv("DAL1068")])
+      assert_receive {:display_flights, _}
+
+      now = DateTime.utc_now()
+      actual_dep = DateTime.add(now, -5400)
+      # API bug: estimated_arrival == actual_departure (diff = 0 < 900s)
+      bad_estimated_arr = actual_dep
+      scheduled_arr = DateTime.add(now, 1800)
+
+      info = %{
+        fi()
+        | departure_time: actual_dep,
+          actual_departure_time: actual_dep,
+          estimated_arrival_time: bad_estimated_arr,
+          arrival_time: scheduled_arr
+      }
+
+      broadcast_enriched("DAL1068", info)
+      assert_receive {:display_flights, flights}
+      [flight] = flights
+
+      # bad estimated rejected → uses scheduled arrival
+      # 90 min elapsed of 120 min total → ~75%
+      refute is_nil(flight.flight_info.progress_pct)
+      assert_in_delta flight.flight_info.progress_pct, 0.75, 0.05
+    end
+
+    test "tracked synthetic flight progress is recalculated on each ADS-B tick" do
+      broadcast_config(:display_mode, :tracked)
+      assert_receive {:display_flights, _}
+      broadcast_config(:tracked_flights, ["AAL1234"])
+      assert_receive {:display_flights, _}
+
+      now = DateTime.utc_now()
+      # Enrich in tracked mode (creates synthetic entry via flight_enriched handler)
+      broadcast_enriched(
+        "AAL1234",
+        fi(dep: DateTime.add(now, -3600), arr: DateTime.add(now, 3600))
+      )
+
+      assert_receive {:display_flights, flights}
+      assert_in_delta hd(flights).flight_info.progress_pct, 0.5, 0.05
+
+      pid = GenServer.whereis(Tracker)
+
+      :sys.replace_state(pid, fn state ->
+        Map.update!(state, :flights, fn fm ->
+          Map.update!(fm, "AAL1234", fn tracked ->
+            new_fi = %{
+              tracked.flight_info
+              | departure_time: DateTime.add(now, -7000),
+                arrival_time: DateTime.add(now, -200)
+            }
+
+            %{tracked | flight_info: new_fi}
+          end)
+        end)
+      end)
+
+      # Empty ADS-B tick — inject_missing_tracked runs, should recalculate progress
+      broadcast_raw([])
+      assert_receive {:display_flights, flights}
+      assert hd(flights).flight_info.progress_pct == 1.0
+    end
+  end
+
   test "empty airport filter shows all flights" do
     broadcast_config(:airport_filters, [])
     assert_receive {:display_flights, _}

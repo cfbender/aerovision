@@ -99,6 +99,7 @@ defmodule AeroVision.MixProject do
 
       # HTTP client
       {:req, "~> 0.5"},
+      {:castore, "~> 1.0"},
 
       # Hardware
       {:circuits_gpio, "~> 2.0", targets: @all_targets},
@@ -139,7 +140,10 @@ defmodule AeroVision.MixProject do
   defp aliases do
     [
       loadconfig: [&bootstrap/1],
+      setup: ["deps.get", "assets.setup", &copy_zoneinfo/1],
       precommit: ["format", "compile --warnings-as-errors", "test"],
+      build: ["assets.deploy", "firmware"],
+      deploy: ["assets.deploy", "firmware", "upload aerovision.local"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind aerovision", "esbuild aerovision"],
       "assets.deploy": [
@@ -147,9 +151,29 @@ defmodule AeroVision.MixProject do
         "esbuild aerovision --minify",
         "phx.digest"
       ],
-      "firmware.burn": ["firmware", "nerves.firmware.burn"],
-      "firmware.upload": ["firmware", "nerves.firmware.ssh"]
+      "firmware.burn": ["assets.deploy", "firmware", "nerves.firmware.burn"],
+      "firmware.upload": ["assets.deploy", "firmware", "nerves.firmware.ssh"]
     ]
+  end
+
+  # Copies the host system's IANA timezone database into the Nerves rootfs overlay
+  # so the device has tz data available at /usr/share/zoneinfo/ at runtime.
+  # The source (/usr/share/zoneinfo) is present on macOS and all major Linux distros.
+  defp copy_zoneinfo(_args) do
+    src = "/usr/share/zoneinfo"
+    dst = Path.join([File.cwd!(), "rootfs_overlay", "usr", "share", "zoneinfo"])
+
+    if File.exists?(src) do
+      File.rm_rf!(dst)
+      File.mkdir_p!(Path.dirname(dst))
+      File.cp_r!(src, dst)
+      Mix.shell().info("[:zoneinfo] Copied #{src} → #{dst}")
+    else
+      Mix.shell().error(
+        "[:zoneinfo] #{src} not found — timezone data not copied. " <>
+          "Install tzdata (e.g. `brew install tzdata` or `apt install tzdata`)."
+      )
+    end
   end
 
   # Nerves requires loading the config before deps are available, so we call the

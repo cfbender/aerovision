@@ -28,6 +28,7 @@ defmodule AeroVision.Flight.Skylink.ADSB do
 
   alias AeroVision.Flight.StateVector
   alias AeroVision.Config.Store
+  alias AeroVision.TimeSync
 
   @pubsub AeroVision.PubSub
   @topic "flights"
@@ -145,10 +146,16 @@ defmodule AeroVision.Flight.Skylink.ADSB do
   # ─────────────────────────────────────────────────────────── fetch logic ──
 
   defp do_fetch(state) do
-    if should_poll?(state) do
-      fetch_aircraft(state)
-    else
+    if not TimeSync.synchronized?() do
+      Logger.debug("[Skylink.ADSB] Clock not synced — deferring poll")
+      schedule_poll(state)
       state
+    else
+      if should_poll?(state) do
+        fetch_aircraft(state)
+      else
+        state
+      end
     end
   end
 

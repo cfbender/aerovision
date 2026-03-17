@@ -28,6 +28,11 @@ defmodule AeroVision.Flight.Tracker do
   @cleanup_interval_ms 30_000
   @stale_threshold_sec 120
   @cache_key :last_flights
+  # Must match the same constant in Renderer — no flight shorter than this is valid
+  @min_flight_duration_sec 15 * 60
+  # Bump whenever TrackedFlight or FlightInfo struct fields change so stale
+  # serialized structs (missing new fields) don't crash on access after a deploy.
+  @cache_version 2
 
   # ─────────────────────────────────────────────────────────── public API ──
 
@@ -95,13 +100,29 @@ defmodule AeroVision.Flight.Tracker do
           ]
       )
 
-    # Restore last known flights from cache
-    cached_flights = CubDB.get(db, @cache_key, %{})
-    flight_count = map_size(cached_flights)
+    # Check cache version — clear flights if the TrackedFlight/FlightInfo struct
+    # layout has changed since the last deploy. Accessing missing fields on a
+    # stale deserialized struct raises KeyError and crashes the GenServer.
+    stored_version = CubDB.get(db, :cache_version, 0)
 
-    if flight_count > 0 do
-      Logger.info("[Tracker] Restored #{flight_count} flight(s) from cache")
-    end
+    cached_flights =
+      if stored_version < @cache_version do
+        Logger.info(
+          "[Tracker] Cache version #{stored_version} < #{@cache_version} — clearing stale flight data"
+        )
+
+        CubDB.put(db, :cache_version, @cache_version)
+        CubDB.delete(db, @cache_key)
+        %{}
+      else
+        flights = CubDB.get(db, @cache_key, %{})
+
+        if map_size(flights) > 0 do
+          Logger.info("[Tracker] Restored #{map_size(flights)} flight(s) from cache")
+        end
+
+        flights
+      end
 
     state = %{
       flights: cached_flights,
@@ -184,8 +205,14 @@ defmodule AeroVision.Flight.Tracker do
                 Map.put(acc, callsign, tracked)
 
               existing ->
-                # Known flight — update position data
-                updated = %{existing | state_vector: sv, last_seen_at: now}
+                # Known flight — update position data and recalculate progress
+                updated = %{
+                  existing
+                  | state_vector: sv,
+                    last_seen_at: now,
+                    flight_info: refresh_progress(existing.flight_info, sv)
+                }
+
                 Map.put(acc, callsign, updated)
             end
         end
@@ -280,7 +307,11 @@ defmodule AeroVision.Flight.Tracker do
       if new_state.mode == :tracked do
         now = DateTime.utc_now()
         new_flights = inject_missing_tracked(new_state.flights, new_state, now)
-        %{new_state | flights: new_flights}
+        updated = %{new_state | flights: new_flights}
+        # Persist immediately so synthetic entries survive a Tracker restart
+        # before the next ADS-B poll cycle writes the cache.
+        CubDB.put(updated.db, @cache_key, new_flights)
+        updated
       else
         new_state
       end
@@ -325,14 +356,17 @@ defmodule AeroVision.Flight.Tracker do
     cutoff = DateTime.add(DateTime.utc_now(), -@stale_threshold_sec, :second)
 
     active_flights =
-      Map.filter(state.flights, fn {_callsign, tracked} ->
-        DateTime.compare(tracked.last_seen_at, cutoff) == :gt
+      Map.filter(state.flights, fn {callsign, tracked} ->
+        # Explicitly-tracked flights are never pruned — the user asked for them
+        # permanently, regardless of ADS-B coverage or poll hiccups.
+        explicitly_tracked?(callsign, state) or
+          DateTime.compare(tracked.last_seen_at, cutoff) == :gt
       end)
 
     pruned = map_size(state.flights) - map_size(active_flights)
 
     if pruned > 0 do
-      Logger.debug("[Tracker] Pruned #{pruned} stale flight(s)")
+      Logger.info("[Tracker] Pruned #{pruned} stale flight(s)")
     end
 
     cleanup_timer = schedule_cleanup()
@@ -399,13 +433,16 @@ defmodule AeroVision.Flight.Tracker do
       match = Enum.find(acc, fn {cs, _} -> callsign_matches?(cs, tracked_entry) end)
 
       case match do
-        {cs, %TrackedFlight{state_vector: %StateVector{baro_altitude: nil}} = existing} ->
-          # Existing synthetic entry (no real telemetry) — refresh last_seen_at
-          Map.put(acc, cs, %{existing | last_seen_at: now})
+        {cs, existing} ->
+          # Tracked flight (real or synthetic) — refresh last_seen_at and
+          # recalculate progress so it advances on every poll tick
+          updated = %{
+            existing
+            | last_seen_at: now,
+              flight_info: refresh_progress(existing.flight_info, existing.state_vector)
+          }
 
-        {_cs, _real_flight} ->
-          # Has real ADS-B data — leave it alone
-          acc
+          Map.put(acc, cs, updated)
 
         nil ->
           # Not in flights at all — create synthetic entry
@@ -546,40 +583,59 @@ defmodule AeroVision.Flight.Tracker do
     String.downcase(callsign) == String.downcase(tracked_entry)
   end
 
+  # Returns true when the callsign is in the user's tracked list (tracked mode only).
+  defp explicitly_tracked?(callsign, %{mode: :tracked, tracked_flights: [_ | _] = list}),
+    do: Enum.any?(list, &callsign_matches?(callsign, &1))
+
+  defp explicitly_tracked?(_callsign, _state), do: false
+
   # ──────────────────────────────────────────────────── progress calculation ──
 
   # Calculate flight progress (0.0–1.0) from departure and arrival times.
   # Prefers actual_departure_time over scheduled for accuracy when the flight
-  # departed late. Falls back to nil if times are unavailable.
-  defp calculate_progress(_sv, %FlightInfo{arrival_time: nil}), do: nil
-
-  defp calculate_progress(_sv, %FlightInfo{departure_time: nil, actual_departure_time: nil}),
-    do: nil
-
+  # departed late. Applies the same 15-minute sanity check as the renderer so
+  # bad estimated_arrival_time values from the API don't collapse progress to 0.
+  # Returns nil if any required time is unavailable or the data looks invalid.
   defp calculate_progress(_sv, info) do
     now = DateTime.utc_now()
 
-    depart = info.actual_departure_time || info.departure_time
-    arrive = info.arrival_time
+    # Prefer most accurate departure time: actual > estimated > scheduled
+    depart = info.actual_departure_time || info.estimated_departure_time || info.departure_time
+    # Use validated arrival — rejects estimated values within 15 min of departure
+    arrive = validated_arrival_time(info, depart)
 
-    dep_unix = DateTime.to_unix(depart)
-    arr_unix = DateTime.to_unix(arrive)
-    now_unix = DateTime.to_unix(now)
+    if is_nil(depart) or is_nil(arrive) do
+      nil
+    else
+      dep_unix = DateTime.to_unix(depart)
+      arr_unix = DateTime.to_unix(arrive)
+      now_unix = DateTime.to_unix(now)
+      total = arr_unix - dep_unix
 
-    total = arr_unix - dep_unix
-
-    cond do
-      # Flight hasn't departed yet according to schedule — return nil so we
-      # show no progress bar rather than a misleading 0%
-      total <= 0 ->
-        nil
-
-      now_unix < dep_unix ->
-        nil
-
-      true ->
-        min((now_unix - dep_unix) / total, 1.0)
+      cond do
+        # Arrival not meaningfully after departure — data is unusable
+        total <= 0 -> nil
+        # Flight hasn't departed yet
+        now_unix < dep_unix -> nil
+        true -> min((now_unix - dep_unix) / total, 1.0)
+      end
     end
+  end
+
+  # Recomputes progress_pct on a FlightInfo, or returns nil as-is.
+  defp refresh_progress(nil, _sv), do: nil
+  defp refresh_progress(fi, sv), do: %{fi | progress_pct: calculate_progress(sv, fi)}
+
+  # Mirror of Renderer.best_arrival_time/1 — rejects estimated arrival times
+  # that are within @min_flight_duration_sec of departure (bad API data).
+  defp validated_arrival_time(info, departure) do
+    estimated = info.estimated_arrival_time
+
+    estimated_valid? =
+      not is_nil(estimated) and
+        (is_nil(departure) or DateTime.diff(estimated, departure) > @min_flight_duration_sec)
+
+    if estimated_valid?, do: estimated, else: info.arrival_time
   end
 
   # ──────────────────────────────────────────────────────── broadcast helper ──

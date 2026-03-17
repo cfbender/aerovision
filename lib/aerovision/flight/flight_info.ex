@@ -22,6 +22,10 @@ defmodule AeroVision.Flight.FlightInfo do
     :actual_departure_time,
     # DateTime | nil - scheduled arrival (scheduled_in)
     :arrival_time,
+    # DateTime | nil - estimated departure time (from Skylink when delayed)
+    :estimated_departure_time,
+    # DateTime | nil - estimated arrival time (from Skylink, best prediction for in-progress flights)
+    :estimated_arrival_time,
     # String | nil - "En Route", "Landed", "Scheduled"
     :status,
     # float 0.0-1.0 | nil

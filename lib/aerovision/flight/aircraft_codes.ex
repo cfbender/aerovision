@@ -35,12 +35,20 @@ defmodule AeroVision.Flight.AircraftCodes do
       abbreviate_crj(name)
   end
 
-  # Convert "Boeing 737-800" → "B738", "Boeing 777" → "B777"
+  # Convert "BOEING B738" → "B738", "Boeing 737-800" → "B738", "Boeing 777" → "B777"
   defp abbreviate_boeing(name) do
-    case Regex.run(~r/Boeing\s+(\d{3})(?:[- ](\d))?/i, name) do
-      [_, model, variant_digit] -> "B#{String.slice(model, 0, 2)}#{variant_digit}"
-      [_, model] -> "B#{model}"
-      _ -> nil
+    # ADS-B ICAO type code format: "BOEING B738", "BOEING B77W", "BOEING B789"
+    case Regex.run(~r/Boeing\s+(B\w{3,4})\b/i, name) do
+      [_, code] ->
+        String.upcase(code)
+
+      _ ->
+        # Full name format: "Boeing 737-800" → "B738", "Boeing 777" → "B777"
+        case Regex.run(~r/Boeing\s+(\d{3})(?:[- ](\d))?/i, name) do
+          [_, model, variant_digit] -> "B#{String.slice(model, 0, 2)}#{variant_digit}"
+          [_, model] -> "B#{model}"
+          _ -> nil
+        end
     end
   end
 

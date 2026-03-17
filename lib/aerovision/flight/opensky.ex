@@ -28,6 +28,7 @@ defmodule AeroVision.Flight.OpenSky do
 
   alias AeroVision.Config.Store
   alias AeroVision.Flight.{StateVector, GeoUtils}
+  alias AeroVision.TimeSync
 
   @pubsub AeroVision.PubSub
   @topic "flights"
@@ -138,18 +139,24 @@ defmodule AeroVision.Flight.OpenSky do
   # ─────────────────────────────────────────────────────────── fetch logic ──
 
   defp do_fetch(state) do
-    if should_poll?(state) do
-      case ensure_token(state) do
-        {:ok, new_state} ->
-          vectors = fetch_states(new_state)
-          Phoenix.PubSub.broadcast(@pubsub, @topic, {:flights_raw, vectors})
-          new_state
-
-        {:error, state} ->
-          state
-      end
-    else
+    if not TimeSync.synchronized?() do
+      Logger.debug("[OpenSky] Clock not synced — deferring poll")
+      schedule_poll(state)
       state
+    else
+      if should_poll?(state) do
+        case ensure_token(state) do
+          {:ok, new_state} ->
+            vectors = fetch_states(new_state)
+            Phoenix.PubSub.broadcast(@pubsub, @topic, {:flights_raw, vectors})
+            new_state
+
+          {:error, state} ->
+            state
+        end
+      else
+        state
+      end
     end
   end
 
