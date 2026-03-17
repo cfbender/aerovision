@@ -5,6 +5,8 @@ defmodule AeroVisionWeb.SetupLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
+      # Disarm the network watchdog — a client has successfully reached the UI
+      AeroVision.Network.Watchdog.ping()
     end
 
     network_mode = AeroVision.Network.Manager.current_mode()

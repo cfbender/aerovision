@@ -97,7 +97,7 @@ defmodule AeroVision.Display.Driver do
   end
 
   def handle_cast({:send_command, command_map}, state) do
-    send_to_port(state.port, command_map)
+    state = safe_send_to_port(state, command_map)
 
     Phoenix.PubSub.broadcast(
       AeroVision.PubSub,
@@ -117,9 +117,17 @@ defmodule AeroVision.Display.Driver do
 
   def handle_call({:send_command_sync, command_map}, from, state) do
     ref = make_ref()
-    send_to_port(state.port, Map.put(command_map, :__ref__, inspect(ref)))
-    pending = Map.put(state.pending_calls, ref, from)
-    {:noreply, %{state | pending_calls: pending}}
+
+    try do
+      send_to_port(state.port, Map.put(command_map, :__ref__, inspect(ref)))
+      pending = Map.put(state.pending_calls, ref, from)
+      {:noreply, %{state | pending_calls: pending}}
+    rescue
+      ArgumentError ->
+        Logger.warning("[Display.Driver] Port died during sync send — degrading to no-op mode")
+        Process.send_after(self(), :retry_port, 5_000)
+        {:reply, {:error, :port_died}, %{state | port: nil, alive: false}}
+    end
   end
 
   # --- Sync call: alive? -------------------------------------------------------
@@ -157,11 +165,40 @@ defmodule AeroVision.Display.Driver do
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
     Logger.error(
-      "[Display.Driver] led_driver exited with status #{status} — letting supervisor restart"
+      "[Display.Driver] led_driver exited with status #{status} — degrading to no-op mode, retrying in 5s"
     )
 
-    # Fail the GenServer so the supervisor can restart us (and the port)
-    {:stop, {:port_exited, status}, %{state | port: nil, alive: false}}
+    Process.send_after(self(), :retry_port, 5_000)
+    {:noreply, %{state | port: nil, alive: false}}
+  end
+
+  # --- Port retry ----------------------------------------------------------------
+
+  @impl true
+  def handle_info(:retry_port, %{alive: true} = state) do
+    # Already running again (e.g. concurrent retry messages) — ignore
+    {:noreply, state}
+  end
+
+  def handle_info(:retry_port, state) do
+    path = Application.app_dir(:aerovision, "priv/led_driver")
+
+    if File.exists?(path) do
+      Logger.info("[Display.Driver] Retrying led_driver at #{path}")
+
+      try do
+        port = open_port(path)
+        {:noreply, %{state | port: port, alive: true}}
+      rescue
+        e ->
+          Logger.error("[Display.Driver] Retry failed: #{inspect(e)} — will retry in 5s")
+          Process.send_after(self(), :retry_port, 5_000)
+          {:noreply, state}
+      end
+    else
+      Logger.warning("[Display.Driver] led_driver binary not found — staying in no-op mode")
+      {:noreply, state}
+    end
   end
 
   # --- RT throttle disable -----------------------------------------------------
@@ -231,6 +268,18 @@ defmodule AeroVision.Display.Driver do
       {:spawn_executable, path},
       [:binary, :exit_status, {:packet, 4}, {:args, args}]
     )
+  end
+
+  defp safe_send_to_port(%{alive: false} = state, _command_map), do: state
+
+  defp safe_send_to_port(%{port: port} = state, command_map) do
+    send_to_port(port, command_map)
+    state
+  rescue
+    ArgumentError ->
+      Logger.warning("[Display.Driver] Port died during send — degrading to no-op mode")
+      Process.send_after(self(), :retry_port, 5_000)
+      %{state | port: nil, alive: false}
   end
 
   defp send_to_port(port, command_map) do

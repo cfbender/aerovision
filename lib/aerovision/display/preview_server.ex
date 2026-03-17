@@ -87,8 +87,11 @@ defmodule AeroVision.Display.PreviewServer do
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.error("[PreviewServer] led_driver preview process exited with status #{status}")
-    {:stop, {:port_exited, status}, %{state | port: nil, alive: false}}
+    Logger.error(
+      "[PreviewServer] led_driver preview process exited with status #{status} — degrading to no-op mode"
+    )
+
+    {:noreply, %{state | port: nil, alive: false}}
   end
 
   def handle_info(_msg, state) do

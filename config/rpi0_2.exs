@@ -23,10 +23,12 @@ config :shoehorn,
 
 config :nerves_runtime, :kernel, use_system_registry: false
 
-# Configure mDNS
+# Configure mDNS — exclude usb0 so its 172.31.x.x address is never announced.
+# if_monitor is intentionally omitted: mdns_lite auto-detects VintageNet.
 config :mdns_lite,
   hosts: [:hostname, "aerovision"],
   ttl: 120,
+  excluded_ifnames: ["lo0", "lo", "ppp0", "wwan0", "usb0", "__unknown"],
   services: [
     %{
       protocol: "http",
@@ -35,13 +37,49 @@ config :mdns_lite,
     }
   ]
 
-# VintageNet default config — will be overridden by Network.Manager
+# Read WiFi credentials from .env at build time so VintageNet can connect on
+# first boot without runtime wlan0 reconfiguration. The brcmfmac driver on the
+# Pi Zero 2 W cannot reliably transition wlan0 from scan-only to infrastructure
+# mode at runtime, so credentials must be baked in before the interface starts.
+{wlan0_boot_ssid, wlan0_boot_pass} =
+  case File.read(Path.join(File.cwd!(), ".env")) do
+    {:ok, contents} ->
+      get_val = fn key, text ->
+        case Regex.run(~r/^#{key}\s*=\s*['"]?([^'"\n]+)['"]?\s*$/m, text) do
+          [_, val] -> String.trim(val)
+          _ -> nil
+        end
+      end
+
+      {get_val.("WIFI_SSID", contents), get_val.("WIFI_PASSWORD", contents)}
+
+    _ ->
+      {nil, nil}
+  end
+
+wlan0_boot_config =
+  if is_binary(wlan0_boot_ssid) and wlan0_boot_ssid != "" and
+       is_binary(wlan0_boot_pass) and wlan0_boot_pass != "" do
+    %{
+      type: VintageNetWiFi,
+      vintage_net_wifi: %{
+        networks: [%{ssid: wlan0_boot_ssid, psk: wlan0_boot_pass, key_mgmt: :wpa_psk}]
+      },
+      ipv4: %{method: :dhcp}
+    }
+  else
+    %{type: VintageNetWiFi}
+  end
+
+# VintageNet boot config — wlan0 includes baked-in credentials when available
+# so the brcmfmac driver can connect to WiFi immediately without a runtime
+# reconfiguration step. Falls back to scan-only mode if no credentials found.
 config :vintage_net,
   regulatory_domain: "US",
   config: [
     {"usb0", %{type: VintageNetDirect}},
     {"eth0", %{type: VintageNetEthernet, ipv4: %{method: :dhcp}}},
-    {"wlan0", %{type: VintageNetWiFi}}
+    {"wlan0", wlan0_boot_config}
   ]
 
 config :nerves_time, :servers, [

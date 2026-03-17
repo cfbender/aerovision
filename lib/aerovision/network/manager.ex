@@ -155,7 +155,23 @@ defmodule AeroVision.Network.Manager do
     state =
       if credentials_present?(ssid, password) do
         Logger.info("[Network.Manager] Credentials found — starting in infrastructure mode")
-        configure_infrastructure(ssid, password)
+
+        # Check if VintageNet already connected wlan0 from its boot config.
+        # If so, skip reconfiguration — the brcmfmac driver on the Pi Zero 2 W
+        # cannot reliably handle runtime wlan0 teardown/restart and may leave
+        # the interface unable to pass traffic despite appearing associated.
+        # On host/test, on_target?() is false so we always call configure_infrastructure.
+        already_connected? =
+          on_target?() and
+            vintage_net_get(["interface", @interface, "connection"]) in [:internet, :lan] and
+            not ap_mode_active?()
+
+        if already_connected? do
+          Logger.info("[Network.Manager] wlan0 already connected — skipping reconfiguration")
+        else
+          configure_infrastructure(ssid, password)
+        end
+
         %{mode: :infrastructure, reconnect_timer: nil, ssid: ssid}
       else
         Logger.info("[Network.Manager] No credentials — starting in AP mode")
@@ -268,6 +284,21 @@ defmodule AeroVision.Network.Manager do
 
   defp credentials_present?(ssid, password) do
     is_binary(ssid) and ssid != "" and is_binary(password) and password != ""
+  end
+
+  # Returns true if wlan0's current VintageNet config is AP mode.
+  # Used to distinguish AP mode (which also reports :lan) from infrastructure
+  # mode so we don't skip reconfiguration when AP mode was persisted on boot.
+  # Must only be called on target (where vintage_net_get returns real data).
+  defp ap_mode_active? do
+    if on_target?() do
+      case vintage_net_get(["interface", @interface, "config"]) do
+        %{vintage_net_wifi: %{networks: [%{mode: :ap} | _]}} -> true
+        _ -> false
+      end
+    else
+      false
+    end
   end
 
   # --- VintageNet configuration -----------------------------------------------
@@ -426,7 +457,7 @@ defmodule AeroVision.Network.Manager do
 
   defp vintage_net_get(property) do
     if on_target?() do
-      VintageNet.get(property)
+      apply(VintageNet, :get, [property])
     else
       nil
     end
