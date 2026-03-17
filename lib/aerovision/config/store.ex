@@ -29,7 +29,7 @@ defmodule AeroVision.Config.Store do
     airline_filters: [],
     airport_filters: [],
     display_brightness: 80,
-    display_cycle_seconds: 8,
+    display_cycle_seconds: 15,
     display_mode: :nearby,
     units: :imperial,
     timezone: "America/New_York",

@@ -150,9 +150,7 @@ defmodule AeroVision.MixProject do
         "tailwind aerovision --minify",
         "esbuild aerovision --minify",
         "phx.digest"
-      ],
-      "firmware.burn": ["assets.deploy", "firmware", "nerves.firmware.burn"],
-      "firmware.upload": ["assets.deploy", "firmware", "nerves.firmware.ssh"]
+      ]
     ]
   end
 

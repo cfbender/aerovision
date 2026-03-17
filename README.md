@@ -159,9 +159,10 @@ The repo includes a `mise.toml` with pinned versions. If you use [mise](https://
 git clone https://github.com/yourusername/aerovision
 cd aerovision
 
-# Install Elixir dependencies and set up assets
-mix deps.get
-mix assets.setup
+# Install dependencies, set up assets, and copy timezone data
+mix setup
+
+# Build assets for development
 mix assets.build
 
 # Build the Go display driver in emulator mode (no LED hardware needed)
@@ -170,6 +171,8 @@ cd go_src && make build-host && cd ..
 # Start the server
 iex -S mix phx.server
 ```
+
+> **Note**: `mix setup` runs `deps.get`, `assets.setup`, and copies the host's IANA timezone database into `rootfs_overlay/` for Nerves firmware builds. The timezone directory is gitignored, so `mix setup` must be run on every fresh clone.
 
 Visit **[http://localhost:4000](http://localhost:4000)** — the setup wizard will guide you through configuration.
 
@@ -275,8 +278,8 @@ export MIX_ENV=prod
 # Fetch target-specific dependencies
 mix deps.get
 
-# Compile and package the firmware
-mix firmware
+# Build firmware (automatically runs assets.deploy first)
+mix build
 ```
 
 This produces `_build/rpi0_2_prod/nerves/images/aerovision.fw`.
@@ -286,17 +289,31 @@ This produces `_build/rpi0_2_prod/nerves/images/aerovision.fw`.
 ```bash
 # macOS — replace diskN with your SD card device (check with `diskutil list`)
 sudo fwup -a -i _build/rpi0_2_prod/nerves/images/aerovision.fw -d /dev/diskN -t complete
+
+# Or use the convenience alias (runs assets.deploy → firmware → burn):
+mix firmware.burn
 ```
 
 > ⚠️ **Double-check the device path** — flashing the wrong disk will erase it permanently.
+
+### Convenience Aliases
+
+| Alias | Expands to |
+|-------|------------|
+| `mix setup` | `deps.get` → `assets.setup` → copy zoneinfo |
+| `mix build` | `assets.deploy` → `firmware` |
+| `mix deploy` | `assets.deploy` → `firmware` → `upload aerovision.local` |
+| `mix firmware.burn` | `assets.deploy` → `firmware` → `firmware.burn` |
+| `mix firmware.upload` | `assets.deploy` → `firmware` → `firmware.ssh` |
+| `mix precommit` | `format` → `compile --warnings-as-errors` → `test` |
 
 ### Over-the-Air Updates (OTA)
 
 After the first flash, you can push updates over WiFi without removing the SD card:
 
 ```bash
-MIX_TARGET=rpi0_2 MIX_ENV=prod mix firmware
-mix upload aerovision.local
+# One-command deploy (assets.deploy → firmware → upload):
+MIX_TARGET=rpi0_2 MIX_ENV=prod mix deploy
 ```
 
 The device will reboot into the new firmware automatically.
@@ -351,6 +368,8 @@ After completing setup, the device reboots to apply the WiFi configuration (a li
 | **Scanning for flights** | Animated top-down airplane sprite flying across the display in a random direction |
 | **Flight data** | Full flight card cycling through nearby flights |
 | **QR code** | Device IP as a scannable QR code (short button press, WiFi connected only) |
+
+A device log viewer (RingLogger output) is available in real time at **[http://aerovision.local/logs](http://aerovision.local/logs)**.
 
 ### Physical Button Usage
 
@@ -444,6 +463,8 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 5. `Driver` forwards commands to the Go binary via stdin (4-byte length-prefixed JSON)
 6. The Go binary renders to the LED matrix using double-buffered vsync swaps
 
+**NTP sync gate**: The Pi Zero 2W has no real-time clock — on boot, the system clock starts at firmware build time until NTP syncs. `AeroVision.TimeSync.synchronized?/0` gates all HTTPS callers (`FlightStatus`, `ADSB`, `OpenSky`) to prevent TLS certificate validation failures from clock skew.
+
 **Display commands**:
 - `flight_card` — renders a full flight information card
 - `scan_anim` — starts the idle scanning animation (goroutine, looping)
@@ -514,6 +535,9 @@ The `/preview` page works on both host and the real device. On the device, a sep
 - Try using the IP address directly: `mix upload 192.168.1.x` instead of `aerovision.local`
 - SSH into the device: `ssh nerves.local` or `ssh 192.168.1.x`
 
+### Flights not loading on first boot (NTP sync)
+The Pi Zero 2W has no real-time clock. On first boot, the system clock starts at the firmware build time until NTP synchronizes over WiFi (typically 5–15 seconds after connecting). During this window, HTTPS requests fail because TLS certificate validation sees the server certificate as "expired". This is handled automatically — all API callers wait for NTP sync before making requests. If flights don't appear within 30 seconds of WiFi connecting, check the device logs at `http://aerovision.local/logs` for NTP or TLS errors.
+
 ---
 
 ## Project Structure
@@ -525,6 +549,7 @@ aerovision/
 │   ├── aerovision/
 │   │   ├── application.ex        # OTP supervision tree
 │   │   ├── db.ex                 # CubDB wrapper (enrichment cache)
+│   │   ├── time_sync.ex          # NTP sync gate for HTTPS callers (apply/3 wrapper)
 │   │   ├── config/store.ex       # Atomic JSON settings, build-time env seeding
 │   │   ├── network/manager.ex    # WiFi + AP mode (VintageNet)
 │   │   ├── flight/
@@ -545,6 +570,7 @@ aerovision/
 │   │       ├── dashboard_live.ex # Flight dashboard + deferred-connect setup wizard
 │   │       ├── settings_live.ex  # Full configuration UI + reboot/shutdown
 │   │       ├── setup_live.ex     # WiFi-only setup page
+│   │       ├── logs_live.ex       # Device log viewer (RingLogger)
 │   │       └── preview_live.ex   # Live 64×64 pixel grid preview
 │   └── host_stubs/
 │       └── target_stubs.ex       # Circuits.GPIO, VintageNet, Nerves stubs (host only)
@@ -571,7 +597,7 @@ aerovision/
 │   ├── js/app.js                 # Phoenix LiveView JS + PixelGrid hook
 │   ├── css/app.css               # Tailwind v4
 │   └── vendor/                   # topbar, heroicons plugin
-├── rootfs_overlay/               # Files overlaid onto the Nerves root FS
+├── rootfs_overlay/               # Files overlaid onto Nerves root FS (zoneinfo/ is gitignored, generated by mix setup)
 └── priv/
     └── led_driver                # Compiled Go binary (included in firmware)
 ```
