@@ -33,7 +33,8 @@ defmodule AeroVision.Application do
       # Network manager (safe on host — VintageNet calls are no-ops)
       AeroVision.Network.Manager,
       # Flight data pipeline (works on host for development)
-      AeroVision.Flight.AeroAPI,
+      AeroVision.Flight.Skylink.FlightStatus,
+      AeroVision.Flight.Skylink.ADSB,
       AeroVision.Flight.OpenSky,
       AeroVision.Flight.Tracker,
       # Display subsystem (no-op when binary not found)
@@ -52,7 +53,8 @@ defmodule AeroVision.Application do
       # Network management (WiFi + AP fallback)
       AeroVision.Network.Manager,
       # Flight data pipeline
-      AeroVision.Flight.AeroAPI,
+      AeroVision.Flight.Skylink.FlightStatus,
+      AeroVision.Flight.Skylink.ADSB,
       AeroVision.Flight.OpenSky,
       AeroVision.Flight.Tracker,
       # Display subsystem

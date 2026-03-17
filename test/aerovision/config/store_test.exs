@@ -43,16 +43,15 @@ defmodule AeroVision.Config.StoreTest do
     assert get(store, :display_mode) == :nearby
     assert get(store, :display_brightness) == 80
     assert get(store, :display_cycle_seconds) == 8
-    assert get(store, :poll_interval_sec) == 15
     assert get(store, :units) == :imperial
   end
 
   test "get/1 returns nil for unset optional keys", %{store: store} do
     assert is_nil(get(store, :wifi_ssid))
     assert is_nil(get(store, :wifi_password))
+    assert is_nil(get(store, :skylink_api_key))
     assert is_nil(get(store, :opensky_client_id))
     assert is_nil(get(store, :opensky_client_secret))
-    assert is_nil(get(store, :aeroapi_key))
   end
 
   test "get/1 returns stored value after put/2", %{store: store} do
@@ -109,7 +108,6 @@ defmodule AeroVision.Config.StoreTest do
     assert config.display_brightness == 80
     assert config.display_cycle_seconds == 8
     assert config.display_mode == :nearby
-    assert config.poll_interval_sec == 15
     assert config.units == :imperial
   end
 

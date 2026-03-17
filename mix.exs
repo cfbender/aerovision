@@ -58,7 +58,10 @@ defmodule AeroVision.MixProject do
   end
 
   def cli do
-    [preferred_targets: [run: :host, test: :host]]
+    [
+      preferred_targets: [run: :host, test: :host],
+      preferred_envs: [precommit: :test]
+    ]
   end
 
   def application do
@@ -117,7 +120,8 @@ defmodule AeroVision.MixProject do
       {:floki, "~> 0.36"},
       {:dns_cluster, "~> 0.1"},
       {:telemetry_metrics, "~> 1.0"},
-      {:telemetry_poller, "~> 1.0"}
+      {:telemetry_poller, "~> 1.0"},
+      {:zoneinfo, "~> 0.1"}
     ]
   end
 
@@ -135,6 +139,7 @@ defmodule AeroVision.MixProject do
   defp aliases do
     [
       loadconfig: [&bootstrap/1],
+      precommit: ["format", "compile --warnings-as-errors", "test"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind aerovision", "esbuild aerovision"],
       "assets.deploy": [

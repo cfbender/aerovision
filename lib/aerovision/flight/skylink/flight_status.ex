@@ -1,20 +1,23 @@
-defmodule AeroVision.Flight.AeroAPI do
+defmodule AeroVision.Flight.Skylink.FlightStatus do
   @moduledoc """
-  FlightAware AeroAPI v4 enrichment client.
+  Skylink Flight Status API enrichment client.
 
-  Fetches enriched flight data (origin/destination airports, aircraft type,
-  airline name, departure/arrival times) for a given callsign and caches
+  Fetches enriched flight data (origin/destination airports, airline name,
+  departure/arrival times, flight status) for a given callsign and caches
   results in ETS for 24 hours.
 
   Incoming enrichment requests are queued and processed at a max rate of
-  1 request per second to respect AeroAPI rate limits.
+  1 request per second to respect API rate limits.
 
   Broadcasts `{:flight_enriched, callsign, %FlightInfo{}}` on PubSub topic
   "flights" when enrichment completes.
 
   Cache entries are persisted to CubDB so they survive reboots. Monthly API
   call counts are also tracked in CubDB to help stay within the free tier
-  (~1,000 calls/month at $0.005 each).
+  (~1,000 calls/month).
+
+  Key advantage over AeroAPI: the Skylink endpoint returns THE current/active
+  flight for a callsign — no multi-occurrence selection needed.
   """
 
   use GenServer
@@ -23,18 +26,37 @@ defmodule AeroVision.Flight.AeroAPI do
   alias AeroVision.Config.Store
   alias AeroVision.Flight.FlightInfo
   alias AeroVision.Flight.Airport
+  alias AeroVision.Flight.AirportTimezones
 
   @pubsub AeroVision.PubSub
   @topic "flights"
 
-  @cache_table :aerovision_aeroapi_cache
+  @cache_table :aerovision_skylink_cache
   @cache_ttl_sec 86_400
   @rate_limit_ms 1_000
-  @persist_table :aerovision_aeroapi_persist
+  @persist_table :aerovision_skylink_persist
   @monthly_call_cap 1_000
-  # Large unix timestamp used as a sentinel "infinity" in sort comparisons.
-  # Year ~2286 — safely beyond any real flight departure time.
-  @large_unix 9_999_999_999
+  # Buffer after scheduled arrival before considering cache stale (30 minutes)
+  @arrival_buffer_sec 1_800
+
+  @base_url "https://skylink-api.p.rapidapi.com"
+  @api_host "skylink-api.p.rapidapi.com"
+
+  # Months mapping for parsing Skylink's "11 Feb" style date strings
+  @months %{
+    "Jan" => 1,
+    "Feb" => 2,
+    "Mar" => 3,
+    "Apr" => 4,
+    "May" => 5,
+    "Jun" => 6,
+    "Jul" => 7,
+    "Aug" => 8,
+    "Sep" => 9,
+    "Oct" => 10,
+    "Nov" => 11,
+    "Dec" => 12
+  }
 
   # ─────────────────────────────────────────────────────────── public API ──
 
@@ -51,9 +73,14 @@ defmodule AeroVision.Flight.AeroAPI do
     :ok
   end
 
-  @doc "Returns the number of AeroAPI calls made this calendar month."
+  @doc "Returns the number of Skylink API calls made this calendar month."
   def monthly_usage do
     GenServer.call(__MODULE__, :monthly_usage)
+  end
+
+  @doc "Clears all cached flight enrichment data from ETS and CubDB."
+  def clear_cache do
+    GenServer.call(__MODULE__, :clear_cache)
   end
 
   @doc "Synchronously look up a cached %FlightInfo{} by callsign, or nil."
@@ -62,7 +89,7 @@ defmodule AeroVision.Flight.AeroAPI do
 
     case :ets.lookup(@cache_table, callsign) do
       [{^callsign, flight_info, cached_at}] when now - cached_at < @cache_ttl_sec ->
-        flight_info
+        if flight_arrived?(flight_info, now), do: nil, else: flight_info
 
       _ ->
         nil
@@ -85,10 +112,10 @@ defmodule AeroVision.Flight.AeroAPI do
       Keyword.get(opts, :data_dir) ||
         case Application.get_env(:aerovision, :target, :host) do
           target when target in [:host, :test] ->
-            Path.join(System.user_home!(), ".aerovision/aeroapi_cache")
+            Path.join(System.user_home!(), ".aerovision/skylink_cache")
 
           _ ->
-            "/data/aerovision/aeroapi_cache"
+            "/data/aerovision/skylink_cache"
         end
 
     File.mkdir_p!(data_dir)
@@ -137,6 +164,22 @@ defmodule AeroVision.Flight.AeroAPI do
     timer = schedule_tick()
     schedule_prune()
     {:ok, %{state | timer: timer}}
+  end
+
+  @impl true
+  def handle_call(:clear_cache, _from, state) do
+    # Clear ETS cache
+    :ets.delete_all_objects(@cache_table)
+
+    # Clear callsign-keyed entries from CubDB (preserve monthly call counters)
+    CubDB.select(state.db)
+    |> Enum.each(fn
+      {key, _} when is_binary(key) -> CubDB.delete(state.db, key)
+      _ -> :ok
+    end)
+
+    Logger.info("[Skylink.FlightStatus] Cache purged")
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -191,13 +234,16 @@ defmodule AeroVision.Flight.AeroAPI do
 
   defp do_fetch(callsign, state) do
     cond do
-      is_nil(api_key()) ->
-        Logger.warning("[AeroAPI] No API key configured, skipping enrichment for #{callsign}")
+      not credentials_configured?() ->
+        Logger.warning(
+          "[Skylink.FlightStatus] No API key configured, skipping enrichment for #{callsign}"
+        )
+
         state
 
       state.call_count >= @monthly_call_cap ->
         Logger.warning(
-          "[AeroAPI] Monthly cap of #{@monthly_call_cap} calls reached — skipping #{callsign}. " <>
+          "[Skylink.FlightStatus] Monthly cap of #{@monthly_call_cap} calls reached — skipping #{callsign}. " <>
             "Cap resets on the 1st of next month."
         )
 
@@ -210,9 +256,12 @@ defmodule AeroVision.Flight.AeroAPI do
 
   defp do_fetch_http(callsign, state) do
     key = api_key()
-    base_url = aeroapi_config(:base_url)
-    url = "#{base_url}/flights/#{URI.encode(callsign)}"
-    headers = [{"x-apikey", key}]
+    url = "#{@base_url}/flight_status/#{URI.encode(callsign)}"
+
+    headers = [
+      {"X-RapidAPI-Key", key},
+      {"X-RapidAPI-Host", @api_host}
+    ]
 
     case Req.get(url, headers: headers) do
       {:ok, %{status: 200, body: body}} ->
@@ -221,12 +270,12 @@ defmodule AeroVision.Flight.AeroAPI do
             new_state = cache_put(callsign, flight_info, state)
 
             Phoenix.PubSub.broadcast(@pubsub, @topic, {:flight_enriched, callsign, flight_info})
-            Logger.debug("[AeroAPI] Enriched #{callsign}")
+            Logger.debug("[Skylink.FlightStatus] Enriched #{callsign}")
 
             # Increment monthly counter
             new_count = new_state.call_count + 1
             CubDB.put(new_state.db, {:calls, new_state.month_key}, new_count)
-            Phoenix.PubSub.broadcast(@pubsub, "config", {:aeroapi_usage, new_count})
+            Phoenix.PubSub.broadcast(@pubsub, "config", {:skylink_usage, new_count})
 
             # Reset counter if month rolled over
             current_month = month_key()
@@ -239,107 +288,161 @@ defmodule AeroVision.Flight.AeroAPI do
             end
 
           :error ->
-            Logger.debug("[AeroAPI] No usable flight data for #{callsign}")
+            Logger.debug("[Skylink.FlightStatus] No usable flight data for #{callsign}")
             state
         end
 
       {:ok, %{status: 404}} ->
-        Logger.debug("[AeroAPI] Flight not found: #{callsign}")
+        Logger.debug("[Skylink.FlightStatus] Flight not found: #{callsign}")
         state
 
       {:ok, %{status: 429}} ->
-        Logger.warning("[AeroAPI] Rate limited (429) for #{callsign}")
+        Logger.warning("[Skylink.FlightStatus] Rate limited (429) for #{callsign}")
         state
 
       {:ok, %{status: status}} ->
-        Logger.warning("[AeroAPI] Unexpected status #{status} for #{callsign}")
+        Logger.warning("[Skylink.FlightStatus] Unexpected status #{status} for #{callsign}")
         state
 
       {:error, reason} ->
-        Logger.warning("[AeroAPI] HTTP error for #{callsign}: #{inspect(reason)}")
+        Logger.warning("[Skylink.FlightStatus] HTTP error for #{callsign}: #{inspect(reason)}")
+
         state
     end
   end
 
   # ───────────────────────────────────────────────────────── parse helpers ──
 
-  defp parse_flight(%{"flights" => flights}) when is_list(flights) and flights != [] do
-    flight = best_flight(flights)
+  defp parse_flight(%{"flight_number" => _, "status" => status} = body) do
+    # Extract airport structs first so we can look up their timezones
+    dep_airport = parse_airport(body["departure"])
+    arr_airport = parse_airport(body["arrival"])
 
-    info = %FlightInfo{
-      ident: Map.get(flight, "ident"),
-      operator: Map.get(flight, "operator"),
-      airline_name: Map.get(flight, "operator_iata") || Map.get(flight, "operator"),
-      aircraft_type: get_in(flight, ["aircraft_type"]),
-      origin: parse_airport(Map.get(flight, "origin")),
-      destination: parse_airport(Map.get(flight, "destination")),
-      departure_time: parse_time(Map.get(flight, "scheduled_out")),
-      actual_departure_time: parse_time(Map.get(flight, "actual_out")),
-      arrival_time: parse_time(Map.get(flight, "scheduled_in")),
-      cached_at: DateTime.utc_now()
-    }
+    dep_tz = AirportTimezones.timezone_for(dep_airport && dep_airport.iata)
+    arr_tz = AirportTimezones.timezone_for(arr_airport && arr_airport.iata)
+
+    info =
+      %FlightInfo{
+        ident: body["flight_number"],
+        operator: nil,
+        airline_name: body["airline"],
+        aircraft_type: nil,
+        origin: dep_airport,
+        destination: arr_airport,
+        departure_time:
+          parse_datetime(
+            get_in(body, ["departure", "scheduled_time"]),
+            get_in(body, ["departure", "scheduled_date"]),
+            dep_tz
+          ),
+        actual_departure_time:
+          parse_datetime(
+            get_in(body, ["departure", "actual_time"]),
+            get_in(body, ["departure", "actual_date"]),
+            dep_tz
+          ),
+        arrival_time:
+          parse_datetime(
+            get_in(body, ["arrival", "scheduled_time"]),
+            get_in(body, ["arrival", "scheduled_date"]),
+            arr_tz
+          ),
+        cached_at: DateTime.utc_now()
+      }
+      |> Map.put(:status, status)
 
     {:ok, info}
   end
 
   defp parse_flight(_), do: :error
 
-  # Pick the best flight occurrence from AeroAPI's list:
-  # 1. Currently airborne: actual_out is set AND in the past, actual_in not set
-  # 2. Fallback: occurrence with scheduled_out closest to now
-  defp best_flight(flights) do
-    now_unix = System.system_time(:second)
-
-    airborne =
-      Enum.filter(flights, fn f ->
-        actual_out = parse_unix(Map.get(f, "actual_out"))
-        actual_in = Map.get(f, "actual_in")
-        # Must have departed (actual_out set), departure must be in the past,
-        # and must not have landed yet (actual_in nil)
-        actual_out != nil and actual_out <= now_unix and actual_in == nil
-      end)
-
-    if airborne != [] do
-      # Among airborne, pick the one that departed most recently
-      Enum.max_by(airborne, fn f ->
-        parse_unix(Map.get(f, "actual_out")) || 0
-      end)
-    else
-      # No airborne flight — pick the occurrence with scheduled_out closest to now
-      # Use a large integer sentinel instead of :infinity to keep comparisons homogeneous
-      Enum.min_by(flights, fn f ->
-        dep = parse_unix(Map.get(f, "scheduled_out")) || parse_unix(Map.get(f, "actual_out"))
-        if dep, do: abs(dep - now_unix), else: @large_unix
-      end)
-    end
-  end
-
-  defp parse_unix(nil), do: nil
-
-  defp parse_unix(str) when is_binary(str) do
-    case DateTime.from_iso8601(str) do
-      {:ok, dt, _} -> DateTime.to_unix(dt)
-      _ -> nil
-    end
-  end
-
   defp parse_airport(nil), do: nil
 
-  defp parse_airport(airport) when is_map(airport) do
+  defp parse_airport(data) when is_map(data) do
+    {iata, city} = split_airport_field(data["airport"])
+
     %Airport{
-      icao: Map.get(airport, "code_icao"),
-      iata: Map.get(airport, "code_iata"),
-      name: Map.get(airport, "name"),
-      city: Map.get(airport, "city")
+      icao: nil,
+      iata: iata,
+      name: data["airport_full"],
+      city: city
     }
   end
 
-  defp parse_time(nil), do: nil
+  # Split "TPA • Tampa" into {"TPA", "Tampa"}.
+  # Handles both bullet (•) and middle dot (·) separators.
+  defp split_airport_field(nil), do: {nil, nil}
 
-  defp parse_time(str) when is_binary(str) do
-    case DateTime.from_iso8601(str) do
-      {:ok, dt, _} -> dt
+  defp split_airport_field(str) when is_binary(str) do
+    case String.split(str, ~r/\s*[•·]\s*/, parts: 2) do
+      [code, city] -> {String.trim(code), String.trim(city)}
+      [code] -> {String.trim(code), nil}
+    end
+  end
+
+  # Combines a time string like "10:30" and date string like "11 Feb" into a
+  # UTC DateTime. The timezone argument is an IANA timezone string for the
+  # airport where the time was recorded (e.g. "America/New_York"). Year is
+  # inferred as current year; if the resulting date is more than 7 days in the
+  # past we assume next year (handles year-boundary flights). Returns nil on
+  # any parse failure or nil/empty input.
+  defp parse_datetime(nil, _date, _tz), do: nil
+  defp parse_datetime("", _date, _tz), do: nil
+  defp parse_datetime(_time, nil, _tz), do: nil
+  defp parse_datetime(_time, "", _tz), do: nil
+
+  defp parse_datetime(time_str, date_str, timezone) do
+    with [hour_str, minute_str] <- String.split(time_str, ":"),
+         {hour, ""} <- Integer.parse(hour_str),
+         {minute, ""} <- Integer.parse(minute_str),
+         true <- hour in 0..23 and minute in 0..59,
+         [day_str, month_name] <- String.split(date_str, " "),
+         {day, ""} <- Integer.parse(day_str),
+         {:ok, month} <- Map.fetch(@months, month_name) do
+      today = Date.utc_today()
+      year = infer_year(today, day, month)
+
+      case Date.new(year, month, day) do
+        {:ok, date} ->
+          time = Time.new!(hour, minute, 0)
+
+          # Create DateTime in the airport's local timezone, then shift to UTC
+          case DateTime.new(date, time, timezone) do
+            {:ok, local_dt} ->
+              case DateTime.shift_zone(local_dt, "Etc/UTC") do
+                {:ok, utc_dt} -> utc_dt
+                _ -> nil
+              end
+
+            # If timezone creation fails, fall back to treating the time as UTC
+            _ ->
+              case DateTime.new(date, time) do
+                {:ok, dt} -> dt
+                _ -> nil
+              end
+          end
+
+        _ ->
+          nil
+      end
+    else
       _ -> nil
+    end
+  end
+
+  # If the date represented by {day, month} in the current year is more than
+  # 7 days in the past, assume it belongs to next year (year-boundary flight).
+  defp infer_year(today, day, month) do
+    case Date.new(today.year, month, day) do
+      {:ok, candidate} ->
+        if Date.diff(today, candidate) > 7 do
+          today.year + 1
+        else
+          today.year
+        end
+
+      {:error, _} ->
+        today.year
     end
   end
 
@@ -350,6 +453,15 @@ defmodule AeroVision.Flight.AeroAPI do
     :ets.insert(@cache_table, {callsign, flight_info, now})
     CubDB.put(state.db, callsign, {flight_info, now})
     state
+  end
+
+  # Returns true when the scheduled arrival time + buffer has already passed,
+  # meaning the cache entry should be treated as stale. Since arrival_time is
+  # now a correctly-converted UTC DateTime, a simple Unix comparison is enough.
+  defp flight_arrived?(%FlightInfo{arrival_time: nil}, _now), do: false
+
+  defp flight_arrived?(%FlightInfo{arrival_time: arr}, now) do
+    DateTime.to_unix(arr) + @arrival_buffer_sec < now
   end
 
   # ──────────────────────────────────────────────────────────── scheduling ──
@@ -402,7 +514,7 @@ defmodule AeroVision.Flight.AeroAPI do
       CubDB.compact(db)
 
       Logger.debug(
-        "[AeroAPI] Pruned #{length(expired_keys)} expired entries, #{length(old_month_keys)} old month counters"
+        "[Skylink.FlightStatus] Pruned #{length(expired_keys)} expired entries, #{length(old_month_keys)} old month counters"
       )
     end
   end
@@ -416,12 +528,12 @@ defmodule AeroVision.Flight.AeroAPI do
 
   # ────────────────────────────────────────────────────────────── config ──
 
-  defp api_key do
-    key = Store.get(:aeroapi_key)
-    if is_binary(key) and key != "", do: key, else: nil
+  defp credentials_configured? do
+    key = Store.get(:skylink_api_key)
+    is_binary(key) and key != ""
   end
 
-  defp aeroapi_config(key) do
-    Application.get_env(:aerovision, :aeroapi)[key]
+  defp api_key do
+    Store.get(:skylink_api_key)
   end
 end

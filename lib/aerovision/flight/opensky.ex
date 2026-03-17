@@ -1,25 +1,37 @@
 defmodule AeroVision.Flight.OpenSky do
   @moduledoc """
-  OpenSky Network poller.
+  OpenSky ADS-B poller.
 
-  Polls the OpenSky REST API on a configurable interval, authenticates via
-  OAuth2 client-credentials, converts the response into `%StateVector{}`
-  structs, and broadcasts them on the "flights" PubSub topic.
+  Polls the OpenSky Network REST API (`/states/all`) on a 30-second interval,
+  authenticates via OAuth2 client credentials, converts the response into
+  `%StateVector{}` structs, and broadcasts them on the "flights" PubSub topic.
 
-  If no credentials are configured the poller runs in a no-op mode and logs a
-  warning once at startup — it will never crash.
+  ## Activation logic
+
+  OpenSky polls when **either** condition is true:
+
+  - Mode is `:nearby` AND OpenSky credentials are configured — primary nearby
+    source, fetches within a geographic bounding box.
+  - Mode is `:tracked` AND Skylink API key is NOT configured — fallback tracked
+    source, performs a global fetch then filters to tracked callsigns.
+
+  The poller is idle (no scheduled fetches) when neither condition is met.
+
+  ## OAuth2 tokens
+
+  Tokens are cached in state and refreshed automatically when fewer than
+  `@token_refresh_buffer_sec` seconds remain before expiry.
   """
 
   use GenServer
   require Logger
 
-  alias AeroVision.Flight.StateVector
   alias AeroVision.Config.Store
+  alias AeroVision.Flight.{StateVector, GeoUtils}
 
   @pubsub AeroVision.PubSub
   @topic "flights"
-
-  # Tokens expire in 30 min; refresh when <= 5 min remain.
+  @poll_interval_ms 30_000
   @token_refresh_buffer_sec 300
 
   # ─────────────────────────────────────────────────────────── public API ──
@@ -38,11 +50,10 @@ defmodule AeroVision.Flight.OpenSky do
   @impl true
   def init(_opts) do
     state = %{
-      token: nil,
-      token_expires_at: nil,
       poll_timer: nil,
-      rate_limit_remaining: nil,
-      last_fetch_at: nil
+      mode: Store.get(:display_mode),
+      token: nil,
+      token_expires_at: 0
     }
 
     {:ok, state, {:continue, :start_polling}}
@@ -52,7 +63,7 @@ defmodule AeroVision.Flight.OpenSky do
   def handle_continue(:start_polling, state) do
     Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
 
-    if credentials_configured?() do
+    if opensky_configured?() do
       Logger.info("[OpenSky] Starting poller")
     else
       Logger.warning("[OpenSky] No credentials configured — polling disabled")
@@ -74,17 +85,46 @@ defmodule AeroVision.Flight.OpenSky do
     {:noreply, schedule_poll(new_state)}
   end
 
-  # When location changes, trigger an immediate re-poll with the new bounding box.
-  # Debounce rapid location changes — cancel the existing timer and schedule a
-  # fresh fetch in 500ms. If lat, lon, and radius all change in quick succession
-  # (three separate config_changed messages), only one HTTP request fires.
+  # When location changes, debounce rapid changes and trigger a re-poll in 500ms.
+  # If lat, lon, and radius all change in quick succession (three separate
+  # config_changed messages), only one HTTP request fires.
   @impl true
   def handle_info({:config_changed, key, _value}, state)
       when key in [:location_lat, :location_lon, :radius_km] do
-    Logger.info("[OpenSky] Location changed, scheduling re-poll")
-    if state.poll_timer, do: Process.cancel_timer(state.poll_timer)
-    timer = Process.send_after(self(), :poll, 500)
-    {:noreply, %{state | poll_timer: timer}}
+    if state.mode == :nearby do
+      Logger.info("[OpenSky] Location changed, scheduling re-poll")
+      if state.poll_timer, do: Process.cancel_timer(state.poll_timer)
+      timer = Process.send_after(self(), :poll, 500)
+      {:noreply, %{state | poll_timer: timer}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  # When display mode changes, update state and reschedule.
+  def handle_info({:config_changed, :display_mode, value}, state) do
+    Logger.info("[OpenSky] Display mode changed to #{value}, rescheduling")
+    new_state = %{state | mode: value}
+    {:noreply, schedule_poll(new_state)}
+  end
+
+  # When tracked flights list changes, reschedule (relevant in tracked fallback mode).
+  def handle_info({:config_changed, :tracked_flights, _value}, state) do
+    Logger.info("[OpenSky] Tracked flights changed, rescheduling")
+    {:noreply, schedule_poll(state)}
+  end
+
+  # When OpenSky credentials change, reschedule (may enable or disable polling).
+  def handle_info({:config_changed, key, _value}, state)
+      when key in [:opensky_client_id, :opensky_client_secret] do
+    Logger.info("[OpenSky] Credentials changed, rescheduling")
+    {:noreply, schedule_poll(state)}
+  end
+
+  # When Skylink API key changes, reschedule (affects whether we are fallback).
+  def handle_info({:config_changed, :skylink_api_key, _value}, state) do
+    Logger.info("[OpenSky] Skylink key changed, rescheduling")
+    {:noreply, schedule_poll(state)}
   end
 
   def handle_info({:config_changed, _key, _value}, state) do
@@ -98,120 +138,128 @@ defmodule AeroVision.Flight.OpenSky do
   # ─────────────────────────────────────────────────────────── fetch logic ──
 
   defp do_fetch(state) do
-    cond do
-      not credentials_configured?() ->
-        state
+    if should_poll?(state) do
+      case ensure_token(state) do
+        {:ok, new_state} ->
+          vectors = fetch_states(new_state)
+          Phoenix.PubSub.broadcast(@pubsub, @topic, {:flights_raw, vectors})
+          new_state
 
-      rate_limited?(state) ->
-        Logger.warning("[OpenSky] Rate-limited, skipping this poll cycle")
-        state
-
-      true ->
-        case ensure_token(state) do
-          {:ok, token, new_state} ->
-            fetch_states(token, new_state)
-
-          {:error, reason, new_state} ->
-            Logger.warning("[OpenSky] Token fetch failed: #{inspect(reason)}")
-            new_state
-        end
+        {:error, state} ->
+          state
+      end
+    else
+      state
     end
   end
 
-  defp fetch_states(token, state) do
-    {min_lat, min_lon, max_lat, max_lon} = bounding_box()
+  defp fetch_states(state) do
+    url = opensky_config(:base_url) <> "/states/all"
 
-    url =
-      opensky_config(:base_url) <>
-        "/states/all?" <>
-        URI.encode_query(%{
-          lamin: min_lat,
-          lomin: min_lon,
-          lamax: max_lat,
-          lomax: max_lon
-        })
+    params =
+      case state.mode do
+        :nearby ->
+          lat = Store.get(:location_lat)
+          lon = Store.get(:location_lon)
+          radius_km = Store.get(:radius_km)
+          {min_lat, min_lon, max_lat, max_lon} = GeoUtils.bounding_box(lat, lon, radius_km)
+          %{lamin: min_lat, lomin: min_lon, lamax: max_lat, lomax: max_lon}
 
-    headers = [{"Authorization", "Bearer #{token}"}]
+        _ ->
+          # Fallback tracked mode — global fetch (no bbox)
+          %{}
+      end
 
-    case Req.get(url, headers: headers) do
-      {:ok, %{status: 200, body: body, headers: resp_headers}} ->
-        remaining = parse_rate_limit(resp_headers)
-        vectors = parse_states(body)
+    headers = [{"Authorization", "Bearer #{state.token}"}]
+
+    case Req.get(url, headers: headers, params: params) do
+      {:ok, %{status: 200, body: body}} ->
+        states = body["states"] || []
+
+        vectors =
+          states
+          |> Enum.map(&StateVector.from_opensky/1)
+          |> Enum.reject(&is_nil/1)
+          |> filter_by_callsign(state.mode)
+
         Logger.debug("[OpenSky] Fetched #{length(vectors)} state vectors")
-        Phoenix.PubSub.broadcast(@pubsub, @topic, {:flights_raw, vectors})
-
-        %{state | rate_limit_remaining: remaining, last_fetch_at: DateTime.utc_now()}
+        vectors
 
       {:ok, %{status: 429}} ->
-        Logger.warning("[OpenSky] 429 Too Many Requests")
-        %{state | rate_limit_remaining: 0}
+        Logger.warning("[OpenSky] Rate limited (429)")
+        []
 
       {:ok, %{status: status}} ->
-        Logger.warning("[OpenSky] Unexpected status #{status} from API")
-        state
+        Logger.warning("[OpenSky] Unexpected status #{status}")
+        []
 
       {:error, reason} ->
         Logger.warning("[OpenSky] HTTP error: #{inspect(reason)}")
-        state
+        []
     end
   end
 
-  # ──────────────────────────────────────────────────────── token handling ──
+  # In tracked fallback mode, filter down to just the tracked callsigns.
+  defp filter_by_callsign(:nearby, vectors), do: vectors
 
-  defp ensure_token(%{token: token, token_expires_at: exp} = state)
-       when is_binary(token) and is_integer(exp) do
-    now = System.system_time(:second)
+  defp filter_by_callsign(_tracked, vectors) do
+    tracked = Store.get(:tracked_flights)
 
-    if now + @token_refresh_buffer_sec < exp do
-      {:ok, token, state}
+    if tracked == [] do
+      []
     else
-      fetch_token(state)
+      Enum.filter(vectors, fn sv ->
+        sv.callsign &&
+          Enum.any?(tracked, fn t ->
+            String.downcase(sv.callsign) == String.downcase(t)
+          end)
+      end)
     end
   end
 
-  defp ensure_token(state), do: fetch_token(state)
+  # ──────────────────────────────────────────────────────── OAuth2 token ──
 
-  defp fetch_token(state) do
-    client_id = Store.get(:opensky_client_id)
-    client_secret = Store.get(:opensky_client_secret)
+  defp fetch_token do
+    id = Store.get(:opensky_client_id)
+    secret = Store.get(:opensky_client_secret)
     token_url = opensky_config(:token_url)
 
     body = %{
       grant_type: "client_credentials",
-      client_id: client_id,
-      client_secret: client_secret
+      client_id: id,
+      client_secret: secret
     }
 
     case Req.post(token_url, form: body) do
-      {:ok, %{status: 200, body: %{"access_token" => token, "expires_in" => expires_in}}} ->
+      {:ok, %{status: 200, body: body}} ->
+        token = body["access_token"]
+        expires_in = body["expires_in"] || 1800
         expires_at = System.system_time(:second) + expires_in
-        Logger.debug("[OpenSky] Token refreshed, expires in #{expires_in}s")
-        new_state = %{state | token: token, token_expires_at: expires_at}
-        {:ok, token, new_state}
+        Logger.debug("[OpenSky] Token refreshed")
+        {:ok, token, expires_at}
 
-      {:ok, %{status: status, body: body}} ->
-        {:error, "HTTP #{status}: #{inspect(body)}", state}
-
-      {:error, reason} ->
-        {:error, reason, state}
+      _ ->
+        Logger.warning("[OpenSky] Token fetch failed")
+        {:error, :token_fetch_failed}
     end
   end
 
-  # ──────────────────────────────────────────────────────────── parse helpers ──
-
-  defp parse_states(%{"states" => states}) when is_list(states) do
-    states
-    |> Enum.map(&StateVector.from_array/1)
-    |> Enum.reject(&is_nil/1)
+  defp valid_token?(state) do
+    state.token != nil and
+      System.system_time(:second) < state.token_expires_at - @token_refresh_buffer_sec
   end
 
-  defp parse_states(_), do: []
+  defp ensure_token(state) do
+    if valid_token?(state) do
+      {:ok, state}
+    else
+      case fetch_token() do
+        {:ok, token, expires_at} ->
+          {:ok, %{state | token: token, token_expires_at: expires_at}}
 
-  defp parse_rate_limit(headers) do
-    # Req returns headers as a map of %{name => [value, ...]}
-    case Map.get(headers, "x-rate-limit-remaining") do
-      [value | _] -> String.to_integer(value)
-      nil -> nil
+        {:error, _} ->
+          {:error, state}
+      end
     end
   end
 
@@ -219,27 +267,35 @@ defmodule AeroVision.Flight.OpenSky do
 
   defp schedule_poll(state) do
     if state.poll_timer, do: Process.cancel_timer(state.poll_timer)
-    interval_ms = Store.get(:poll_interval_sec) * 1_000
-    timer = Process.send_after(self(), :poll, interval_ms)
-    %{state | poll_timer: timer}
+
+    if should_poll?(state) do
+      timer = Process.send_after(self(), :poll, @poll_interval_ms)
+      %{state | poll_timer: timer}
+    else
+      %{state | poll_timer: nil}
+    end
   end
 
   # ──────────────────────────────────────────────────────────── helpers ──
 
-  defp credentials_configured? do
+  defp should_poll?(%{mode: :nearby} = _state) do
+    opensky_configured?()
+  end
+
+  defp should_poll?(_state) do
+    # Fallback: poll in tracked mode only if Skylink has no key
+    opensky_configured?() and not skylink_configured?()
+  end
+
+  defp opensky_configured? do
     id = Store.get(:opensky_client_id)
     secret = Store.get(:opensky_client_secret)
     is_binary(id) and id != "" and is_binary(secret) and secret != ""
   end
 
-  defp rate_limited?(%{rate_limit_remaining: 0}), do: true
-  defp rate_limited?(_), do: false
-
-  defp bounding_box do
-    lat = Store.get(:location_lat)
-    lon = Store.get(:location_lon)
-    radius = Store.get(:radius_km)
-    AeroVision.Flight.GeoUtils.bounding_box(lat, lon, radius)
+  defp skylink_configured? do
+    key = Store.get(:skylink_api_key)
+    is_binary(key) and key != ""
   end
 
   defp opensky_config(key) do

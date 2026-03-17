@@ -43,6 +43,7 @@ defmodule AeroVision.Flight.TrackerTest do
       departure_time: dep,
       actual_departure_time: nil,
       arrival_time: arr,
+      status: nil,
       progress_pct: nil,
       cached_at: now
     }
@@ -90,12 +91,12 @@ defmodule AeroVision.Flight.TrackerTest do
     File.mkdir_p!(tmp_dir)
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
-    # Stub AeroAPI.enrich (private to this test process) so no HTTP happens.
+    # Stub FlightStatus.enrich (private to this test process) so no HTTP happens.
     # Tests inject enrichment results directly via broadcast_enriched/2.
-    stub(AeroVision.Flight.AeroAPI, :enrich, fn _callsign -> :ok end)
+    stub(AeroVision.Flight.Skylink.FlightStatus, :enrich, fn _callsign -> :ok end)
 
-    # Ensure the ETS cache table exists for AeroAPI.get_cached/1.
-    cache_table = :aerovision_aeroapi_cache
+    # Ensure the ETS cache table exists for FlightStatus.get_cached/1.
+    cache_table = :aerovision_skylink_cache
 
     case :ets.whereis(cache_table) do
       :undefined ->
@@ -105,10 +106,10 @@ defmodule AeroVision.Flight.TrackerTest do
         :ets.delete_all_objects(cache_table)
     end
 
-    # Extend the AeroAPI stub to the Tracker process after it starts.
+    # Extend the FlightStatus stub to the Tracker process after it starts.
     start_supervised!({Tracker, data_dir: tmp_dir})
     tracker_pid = GenServer.whereis(Tracker)
-    allow(AeroVision.Flight.AeroAPI, self(), tracker_pid)
+    allow(AeroVision.Flight.Skylink.FlightStatus, self(), tracker_pid)
 
     Phoenix.PubSub.subscribe(AeroVision.PubSub, "display")
     drain_initial_broadcast()
@@ -510,6 +511,7 @@ defmodule AeroVision.Flight.TrackerTest do
       departure_time: DateTime.add(now, -3600),
       actual_departure_time: nil,
       arrival_time: DateTime.add(now, 3600),
+      status: nil,
       progress_pct: nil,
       cached_at: now
     }

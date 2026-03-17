@@ -2,6 +2,8 @@ import Config
 
 config :aerovision, target: Mix.target()
 
+config :elixir, time_zone_database: Zoneinfo.TimeZoneDatabase
+
 # ---------------------------------------------------------------------------
 # Build-time .env injection
 #
@@ -52,9 +54,9 @@ dot_env_raw =
 e = fn key -> Map.get(dot_env_raw, key) end
 
 config :aerovision, :env_seeds, %{
+  skylink_api_key: e.("SKYLINK_API_KEY"),
   opensky_client_id: e.("OPENSKY_CLIENT_ID"),
   opensky_client_secret: e.("OPENSKY_CLIENT_SECRET"),
-  aeroapi_key: e.("AEROAPI_KEY"),
   wifi_ssid: e.("WIFI_SSID"),
   wifi_password: e.("WIFI_PASSWORD"),
   location_lat: e.("LOCATION_LAT"),
@@ -64,11 +66,11 @@ config :aerovision, :env_seeds, %{
   display_brightness: e.("DISPLAY_BRIGHTNESS"),
   display_cycle_seconds: e.("DISPLAY_CYCLE_SECONDS"),
   display_mode: e.("DISPLAY_MODE"),
-  poll_interval_sec: e.("POLL_INTERVAL_SEC"),
   units: e.("UNITS"),
   tracked_flights: e.("TRACKED_FLIGHTS"),
   airline_filters: e.("AIRLINE_FILTERS"),
-  airport_filters: e.("AIRPORT_FILTERS")
+  airport_filters: e.("AIRPORT_FILTERS"),
+  timezone: e.("TIMEZONE")
 }
 
 # Phoenix config
@@ -101,12 +103,14 @@ config :tailwind,
     cd: Path.expand("..", __DIR__)
   ]
 
+config :aerovision, :skylink,
+  base_url: "https://skylink-api.p.rapidapi.com",
+  host: "skylink-api.p.rapidapi.com"
+
 config :aerovision, :opensky,
   base_url: "https://opensky-network.org/api",
   token_url:
     "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
-
-config :aerovision, :aeroapi, base_url: "https://aeroapi.flightaware.com/aeroapi"
 
 config :aerovision, :display,
   rows: 64,

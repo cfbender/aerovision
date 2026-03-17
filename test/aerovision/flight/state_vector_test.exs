@@ -2,222 +2,348 @@ defmodule AeroVision.Flight.StateVectorTest do
   use ExUnit.Case, async: true
   alias AeroVision.Flight.StateVector
 
-  # A well-formed 17-element list matching OpenSky's array format:
-  # [icao24, callsign, origin_country, time_position, last_contact,
-  #  longitude, latitude, baro_altitude, on_ground, velocity,
-  #  true_track, vertical_rate, sensors, geo_altitude, squawk,
-  #  spi, position_source]
-  defp valid_array do
-    [
-      # icao24
-      "a1b2c3",
-      # callsign (with trailing space)
-      "AAL1234 ",
-      # origin_country
-      "United States",
-      # time_position (unix)
-      1_741_996_800,
-      # last_contact (unix)
-      1_741_996_810,
-      # longitude
-      -78.7875,
-      # latitude
-      35.8776,
-      # baro_altitude (meters)
-      10_668.0,
-      # on_ground
-      false,
-      # velocity (m/s)
-      257.0,
-      # true_track (degrees)
-      045.0,
-      # vertical_rate (m/s)
-      2.5,
-      # sensors (ignored)
-      nil,
-      # geo_altitude (meters)
-      10_972.8,
-      # squawk
-      "1200",
-      # spi (ignored)
-      false,
-      # position_source (0=ADS-B)
-      0
-    ]
+  # A well-formed Skylink-format map matching the fields returned by the
+  # /adsb/aircraft endpoint.
+  defp valid_map do
+    %{
+      "icao24" => "40621D",
+      "callsign" => "BAW123 ",
+      "latitude" => 51.47,
+      "longitude" => -0.46,
+      "altitude" => 35_000.0,
+      "ground_speed" => 450.5,
+      "track" => 89.2,
+      "vertical_rate" => 0.0,
+      "is_on_ground" => false,
+      "last_seen" => "2026-02-11T12:00:00Z",
+      "first_seen" => "2026-02-11T11:45:00Z",
+      "registration" => "G-STBC",
+      "aircraft_type" => "Boeing 777",
+      "airline" => "British Airways"
+    }
   end
 
   # ──────────────────────────────────────────────── happy path ──
 
-  describe "from_array/1 with valid input" do
+  describe "from_skylink/1 with valid input" do
     test "returns a %StateVector{} struct" do
-      assert %StateVector{} = StateVector.from_array(valid_array())
+      assert %StateVector{} = StateVector.from_skylink(valid_map())
     end
 
     test "maps icao24 correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.icao24 == "a1b2c3"
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.icao24 == "40621D"
     end
 
     test "trims trailing spaces from callsign" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.callsign == "AAL1234"
-    end
-
-    test "maps origin_country correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.origin_country == "United States"
-    end
-
-    test "maps time_position correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.time_position == 1_741_996_800
-    end
-
-    test "maps last_contact correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.last_contact == 1_741_996_810
-    end
-
-    test "maps longitude correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.longitude == -78.7875
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.callsign == "BAW123"
     end
 
     test "maps latitude correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.latitude == 35.8776
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.latitude == 51.47
     end
 
-    test "maps baro_altitude correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.baro_altitude == 10_668.0
+    test "maps longitude correctly" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.longitude == -0.46
     end
 
-    test "maps on_ground correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.on_ground == false
+    test "maps baro_altitude from altitude field" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.baro_altitude == 35_000.0
     end
 
-    test "maps velocity correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.velocity == 257.0
+    test "maps velocity from ground_speed field" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.velocity == 450.5
     end
 
-    test "maps true_track correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.true_track == 45.0
+    test "maps true_track from track field" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.true_track == 89.2
     end
 
     test "maps vertical_rate correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.vertical_rate == 2.5
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.vertical_rate == 0.0
     end
 
-    test "skips sensors field (index 12)" do
-      # sensors is in the struct definition but not a struct field — just verify parse succeeds
-      sv = StateVector.from_array(valid_array())
-      assert %StateVector{} = sv
+    test "maps on_ground from is_on_ground field" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.on_ground == false
     end
 
-    test "maps geo_altitude correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.geo_altitude == 10_972.8
+    test "parses last_seen ISO 8601 string to unix timestamp" do
+      sv = StateVector.from_skylink(valid_map())
+      # 2026-02-11T12:00:00Z → unix
+      assert sv.last_contact == DateTime.to_unix(~U[2026-02-11 12:00:00Z])
     end
 
-    test "maps squawk correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.squawk == "1200"
+    test "parses first_seen ISO 8601 string to unix timestamp for time_position" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.time_position == DateTime.to_unix(~U[2026-02-11 11:45:00Z])
     end
 
-    test "maps position_source correctly" do
-      sv = StateVector.from_array(valid_array())
-      assert sv.position_source == 0
+    test "geo_altitude is nil (not in Skylink format)" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.geo_altitude == nil
+    end
+
+    test "squawk is nil (not in Skylink format)" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.squawk == nil
+    end
+
+    test "position_source is nil (not in Skylink format)" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.position_source == nil
+    end
+
+    test "origin_country is nil (not in Skylink format)" do
+      sv = StateVector.from_skylink(valid_map())
+      assert sv.origin_country == nil
     end
   end
 
   # ──────────────────────────────────────────────── callsign edge cases ──
 
-  describe "from_array/1 callsign handling" do
+  describe "from_skylink/1 callsign handling" do
     test "nil callsign is preserved as nil, does not crash" do
-      arr = List.replace_at(valid_array(), 1, nil)
-      sv = StateVector.from_array(arr)
+      sv = StateVector.from_skylink(Map.put(valid_map(), "callsign", nil))
       assert sv.callsign == nil
     end
 
     test "callsign with no spaces is left untouched" do
-      arr = List.replace_at(valid_array(), 1, "UAL456")
-      sv = StateVector.from_array(arr)
+      sv = StateVector.from_skylink(Map.put(valid_map(), "callsign", "UAL456"))
       assert sv.callsign == "UAL456"
+    end
+
+    test "callsign with only spaces becomes empty string" do
+      sv = StateVector.from_skylink(Map.put(valid_map(), "callsign", "   "))
+      assert sv.callsign == ""
     end
   end
 
   # ──────────────────────────────────────────────── on_ground flag ──
 
-  describe "from_array/1 on_ground flag" do
+  describe "from_skylink/1 on_ground flag" do
     test "on_ground true is preserved" do
-      arr = List.replace_at(valid_array(), 8, true)
-      sv = StateVector.from_array(arr)
+      sv = StateVector.from_skylink(Map.put(valid_map(), "is_on_ground", true))
       assert sv.on_ground == true
+    end
+
+    test "missing is_on_ground defaults to false" do
+      sv = StateVector.from_skylink(Map.delete(valid_map(), "is_on_ground"))
+      assert sv.on_ground == false
     end
   end
 
   # ──────────────────────────────────────────────── nil numeric fields ──
 
-  describe "from_array/1 nil fields" do
+  describe "from_skylink/1 nil fields" do
     test "nil values in numeric fields are preserved, not converted" do
-      arr =
-        valid_array()
-        # time_position
-        |> List.replace_at(3, nil)
-        # longitude
-        |> List.replace_at(5, nil)
-        # latitude
-        |> List.replace_at(6, nil)
-        # baro_altitude
-        |> List.replace_at(7, nil)
-        # velocity
-        |> List.replace_at(9, nil)
-        # true_track
-        |> List.replace_at(10, nil)
-        # vertical_rate
-        |> List.replace_at(11, nil)
-        # geo_altitude
-        |> List.replace_at(13, nil)
+      data =
+        valid_map()
+        |> Map.put("longitude", nil)
+        |> Map.put("latitude", nil)
+        |> Map.put("altitude", nil)
+        |> Map.put("ground_speed", nil)
+        |> Map.put("track", nil)
+        |> Map.put("vertical_rate", nil)
 
-      sv = StateVector.from_array(arr)
-      assert sv.time_position == nil
+      sv = StateVector.from_skylink(data)
       assert sv.longitude == nil
       assert sv.latitude == nil
       assert sv.baro_altitude == nil
       assert sv.velocity == nil
       assert sv.true_track == nil
       assert sv.vertical_rate == nil
-      assert sv.geo_altitude == nil
+    end
+
+    test "nil last_seen produces nil last_contact" do
+      sv = StateVector.from_skylink(Map.put(valid_map(), "last_seen", nil))
+      assert sv.last_contact == nil
+    end
+
+    test "nil first_seen produces nil time_position" do
+      sv = StateVector.from_skylink(Map.put(valid_map(), "first_seen", nil))
+      assert sv.time_position == nil
     end
   end
 
-  # ──────────────────────────────────────────────── too-short arrays ──
+  # ──────────────────────────────────────────────── malformed input ──
 
-  describe "from_array/1 with malformed input" do
-    test "empty array returns nil" do
-      assert StateVector.from_array([]) == nil
+  describe "from_skylink/1 with malformed input" do
+    test "map missing icao24 returns nil" do
+      assert StateVector.from_skylink(Map.delete(valid_map(), "icao24")) == nil
     end
 
-    test "array with 10 elements returns nil" do
-      assert StateVector.from_array(Enum.take(valid_array(), 10)) == nil
+    test "map with non-binary icao24 returns nil" do
+      assert StateVector.from_skylink(Map.put(valid_map(), "icao24", 12345)) == nil
     end
 
-    test "array with exactly 16 elements returns nil" do
-      assert StateVector.from_array(Enum.take(valid_array(), 16)) == nil
+    test "empty map returns nil" do
+      assert StateVector.from_skylink(%{}) == nil
     end
 
-    test "array with 17 elements (minimum valid) parses successfully" do
-      assert %StateVector{} = StateVector.from_array(Enum.take(valid_array(), 17))
+    test "non-map input returns nil" do
+      assert StateVector.from_skylink(nil) == nil
+      assert StateVector.from_skylink("not a map") == nil
+      assert StateVector.from_skylink([]) == nil
+    end
+  end
+
+  # ──────────────────────────────────────────── from_opensky/1 ──
+
+  # A well-formed 17-element OpenSky array (indices 0–16)
+  defp valid_opensky_arr do
+    [
+      # 0: icao24
+      "a1b2c3",
+      # 1: callsign (trailing spaces)
+      "UAL123  ",
+      # 2: origin_country
+      "United States",
+      # 3: time_position (unix)
+      1_739_275_200,
+      # 4: last_contact (unix)
+      1_739_275_210,
+      # 5: longitude
+      -87.9073,
+      # 6: latitude
+      41.9742,
+      # 7: baro_altitude (meters)
+      1000.0,
+      # 8: on_ground
+      false,
+      # 9: velocity (m/s)
+      100.0,
+      # 10: true_track (degrees)
+      270.0,
+      # 11: vertical_rate (m/s)
+      5.0,
+      # 12: sensors
+      nil,
+      # 13: geo_altitude (meters)
+      990.0,
+      # 14: squawk
+      "1200",
+      # 15: spi
+      false,
+      # 16: position_source
+      0
+    ]
+  end
+
+  describe "from_opensky/1 with valid input" do
+    test "returns a %StateVector{} struct" do
+      assert %StateVector{} = StateVector.from_opensky(valid_opensky_arr())
     end
 
-    test "array with extra trailing elements parses successfully, extras ignored" do
-      extended = valid_array() ++ ["extra1", "extra2", 99]
-      assert %StateVector{} = StateVector.from_array(extended)
+    test "maps icao24 correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.icao24 == "a1b2c3"
+    end
+
+    test "trims trailing spaces from callsign" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.callsign == "UAL123"
+    end
+
+    test "maps origin_country correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.origin_country == "United States"
+    end
+
+    test "maps time_position correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.time_position == 1_739_275_200
+    end
+
+    test "maps last_contact correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.last_contact == 1_739_275_210
+    end
+
+    test "maps longitude correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.longitude == -87.9073
+    end
+
+    test "maps latitude correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.latitude == 41.9742
+    end
+
+    test "converts baro_altitude from meters to feet (1000 m → 3280.84 ft)" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert_in_delta sv.baro_altitude, 3280.84, 0.01
+    end
+
+    test "maps on_ground correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.on_ground == false
+    end
+
+    test "converts velocity from m/s to knots (100 m/s → 194.384 knots)" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert_in_delta sv.velocity, 194.384, 0.001
+    end
+
+    test "maps true_track correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.true_track == 270.0
+    end
+
+    test "converts vertical_rate from m/s to fpm (5 m/s → 984.25 fpm)" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert_in_delta sv.vertical_rate, 984.25, 0.01
+    end
+
+    test "maps geo_altitude correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.geo_altitude == 990.0
+    end
+
+    test "maps squawk correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.squawk == "1200"
+    end
+
+    test "maps position_source correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.position_source == 0
+    end
+  end
+
+  describe "from_opensky/1 callsign handling" do
+    test "nil callsign is preserved as nil" do
+      arr = List.replace_at(valid_opensky_arr(), 1, nil)
+      sv = StateVector.from_opensky(arr)
+      assert sv.callsign == nil
+    end
+
+    test "callsign with only whitespace becomes nil" do
+      arr = List.replace_at(valid_opensky_arr(), 1, "   ")
+      sv = StateVector.from_opensky(arr)
+      assert sv.callsign == nil
+    end
+  end
+
+  describe "from_opensky/1 with malformed input" do
+    test "list with fewer than 17 elements returns nil" do
+      assert StateVector.from_opensky(Enum.take(valid_opensky_arr(), 16)) == nil
+    end
+
+    test "nil input returns nil" do
+      assert StateVector.from_opensky(nil) == nil
+    end
+
+    test "non-list input returns nil" do
+      assert StateVector.from_opensky(%{}) == nil
+      assert StateVector.from_opensky("not a list") == nil
     end
   end
 end

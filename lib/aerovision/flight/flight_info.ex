@@ -1,5 +1,5 @@
 defmodule AeroVision.Flight.FlightInfo do
-  @moduledoc "Enriched flight information from FlightAware AeroAPI."
+  @moduledoc "Enriched flight information from Skylink Flight Status API."
 
   defstruct [
     # String - flight identifier (e.g., "AAL1234")
@@ -22,6 +22,8 @@ defmodule AeroVision.Flight.FlightInfo do
     :actual_departure_time,
     # DateTime | nil - scheduled arrival (scheduled_in)
     :arrival_time,
+    # String | nil - "En Route", "Landed", "Scheduled"
+    :status,
     # float 0.0-1.0 | nil
     :progress_pct,
     # DateTime - when this was cached

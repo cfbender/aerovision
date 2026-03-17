@@ -13,6 +13,7 @@ defmodule AeroVisionWeb.PreviewLive do
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "preview")
+      Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
 
       # Push cached pixels immediately if available
       if last_pixels do
@@ -24,7 +25,8 @@ defmodule AeroVisionWeb.PreviewLive do
      assign(socket,
        page_title: "Display Preview",
        last_updated: if(last_pixels, do: DateTime.utc_now(), else: nil),
-       pixel_count: if(last_pixels, do: length(last_pixels), else: 0)
+       pixel_count: if(last_pixels, do: length(last_pixels), else: 0),
+       timezone: AeroVision.Config.Store.get(:timezone)
      )}
   end
 
@@ -36,6 +38,10 @@ defmodule AeroVisionWeb.PreviewLive do
       |> push_event("pixels", %{data: pixels})
 
     {:noreply, socket}
+  end
+
+  def handle_info({:config_changed, :timezone, value}, socket) do
+    {:noreply, assign(socket, timezone: value)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -51,7 +57,7 @@ defmodule AeroVisionWeb.PreviewLive do
             <%= if @last_updated do %>
               Updated:
               <span class="text-gray-400 font-mono">
-                {Calendar.strftime(@last_updated, "%H:%M:%S")}
+                {format_local_time(@last_updated, @timezone)}
               </span>
             <% else %>
               <span class="text-gray-600">Waiting for first frame...</span>
@@ -90,5 +96,14 @@ defmodule AeroVisionWeb.PreviewLive do
       </div>
     </Layouts.app>
     """
+  end
+
+  defp format_local_time(nil, _), do: "--:--:--"
+
+  defp format_local_time(%DateTime{} = dt, timezone) do
+    case DateTime.shift_zone(dt, timezone) do
+      {:ok, shifted} -> Calendar.strftime(shifted, "%H:%M:%S")
+      {:error, _} -> Calendar.strftime(dt, "%H:%M:%S")
+    end
   end
 end

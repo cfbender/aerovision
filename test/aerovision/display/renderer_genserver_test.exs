@@ -168,7 +168,7 @@ defmodule AeroVision.Display.RendererGenServerTest do
     pid = GenServer.whereis(Renderer)
 
     expect(Driver, :send_command, fn cmd ->
-      assert cmd.cmd == "set_brightness"
+      assert cmd.cmd == "brightness"
       assert cmd.value == 60
       :ok
     end)

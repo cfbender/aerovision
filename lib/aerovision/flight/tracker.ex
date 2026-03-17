@@ -1,6 +1,6 @@
 defmodule AeroVision.Flight.Tracker do
   @moduledoc """
-  Aggregates flight data from OpenSky (raw ADS-B) and AeroAPI (enrichment).
+  Aggregates flight data from Skylink (raw ADS-B and enrichment).
 
   Subscribes to PubSub topics:
   - "flights" for `{:flights_raw, [%StateVector{}]}` and `{:flight_enriched, ...}`
@@ -17,7 +17,8 @@ defmodule AeroVision.Flight.Tracker do
   require Logger
 
   alias AeroVision.Config.Store
-  alias AeroVision.Flight.{AeroAPI, TrackedFlight, FlightInfo}
+  alias AeroVision.Flight.Skylink.FlightStatus
+  alias AeroVision.Flight.{TrackedFlight, FlightInfo, StateVector}
 
   @pubsub AeroVision.PubSub
   @flights_topic "flights"
@@ -47,6 +48,11 @@ defmodule AeroVision.Flight.Tracker do
   @doc "Trigger an immediate broadcast of the current flight state."
   def broadcast_now do
     GenServer.cast(__MODULE__, :broadcast_now)
+  end
+
+  @doc "Clears all tracked flights. They will repopulate on the next ADS-B poll cycle."
+  def clear_flights do
+    GenServer.cast(__MODULE__, :clear_flights)
   end
 
   # ───────────────────────────────────────────────────────────── callbacks ──
@@ -114,7 +120,7 @@ defmodule AeroVision.Flight.Tracker do
   @impl true
   def handle_continue(:broadcast_initial, state) do
     # Broadcast cached flights immediately so any already-connected LiveViews
-    # receive current state without waiting for the first OpenSky poll
+    # receive current state without waiting for the first Skylink poll
     broadcast_display(state)
     {:noreply, state}
   end
@@ -139,6 +145,15 @@ defmodule AeroVision.Flight.Tracker do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_cast(:clear_flights, state) do
+    Logger.info("[Tracker] All flights cleared by user request")
+    new_state = %{state | flights: %{}}
+    CubDB.put(new_state.db, @cache_key, %{})
+    broadcast_display(new_state)
+    {:noreply, new_state}
+  end
+
   # ──────────────────────────────────────────────────────── info handlers ──
 
   @impl true
@@ -156,12 +171,12 @@ defmodule AeroVision.Flight.Tracker do
               nil ->
                 # New flight — request enrichment only if it passes the active filter
                 if should_enrich?(callsign, state) do
-                  AeroAPI.enrich(callsign)
+                  FlightStatus.enrich(callsign)
                 end
 
                 tracked = %TrackedFlight{
                   state_vector: sv,
-                  flight_info: AeroAPI.get_cached(callsign),
+                  flight_info: FlightStatus.get_cached(callsign),
                   first_seen_at: now,
                   last_seen_at: now
                 }
@@ -176,6 +191,15 @@ defmodule AeroVision.Flight.Tracker do
         end
       end)
 
+    # In tracked mode, create/refresh synthetic entries for tracked callsigns
+    # not found in ADS-B data (e.g., flights over oceans without coverage)
+    new_flights =
+      if state.mode == :tracked do
+        inject_missing_tracked(new_flights, state, now)
+      else
+        new_flights
+      end
+
     new_state = %{state | flights: new_flights}
     CubDB.put(new_state.db, @cache_key, new_flights)
     broadcast_display(new_state)
@@ -186,7 +210,28 @@ defmodule AeroVision.Flight.Tracker do
   def handle_info({:flight_enriched, callsign, %FlightInfo{} = info}, state) do
     case Map.get(state.flights, callsign) do
       nil ->
-        {:noreply, state}
+        # In tracked mode, create a synthetic entry if this callsign is tracked
+        if state.mode == :tracked and
+             Enum.any?(state.tracked_flights, &callsign_matches?(callsign, &1)) do
+          now = DateTime.utc_now()
+          progress = calculate_progress(nil, info)
+          enriched_info = %{info | progress_pct: progress}
+
+          tracked = %TrackedFlight{
+            state_vector: %StateVector{callsign: callsign},
+            flight_info: enriched_info,
+            first_seen_at: now,
+            last_seen_at: now
+          }
+
+          new_flights = Map.put(state.flights, callsign, tracked)
+          new_state = %{state | flights: new_flights}
+          CubDB.put(new_state.db, @cache_key, new_flights)
+          broadcast_display(new_state)
+          {:noreply, new_state}
+        else
+          {:noreply, state}
+        end
 
       tracked ->
         progress = calculate_progress(tracked.state_vector, info)
@@ -204,13 +249,18 @@ defmodule AeroVision.Flight.Tracker do
   @impl true
   def handle_info({:config_changed, key, _value}, state)
       when key in [:location_lat, :location_lon, :radius_km] do
-    # Location changed — clear all flights immediately. Old location's planes
-    # are irrelevant. The next OpenSky broadcast will repopulate with fresh data.
-    Logger.info("[Tracker] Location changed, clearing flight state")
-    new_state = %{state | flights: %{}}
-    CubDB.put(new_state.db, @cache_key, %{})
-    broadcast_display(new_state)
-    {:noreply, new_state}
+    if state.mode == :nearby do
+      # Location changed — clear all flights immediately. Old location's planes
+      # are irrelevant. The next SkyLink broadcast will repopulate with fresh data.
+      Logger.info("[Tracker] Location changed, clearing flight state")
+      new_state = %{state | flights: %{}}
+      CubDB.put(new_state.db, @cache_key, %{})
+      broadcast_display(new_state)
+      {:noreply, new_state}
+    else
+      # In tracked mode, location is irrelevant — keep flight state intact
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -224,6 +274,17 @@ defmodule AeroVision.Flight.Tracker do
   @impl true
   def handle_info({:config_changed, :tracked_flights, value}, state) do
     new_state = %{state | tracked_flights: value}
+
+    # In tracked mode, create synthetic entries for new callsigns immediately
+    new_state =
+      if new_state.mode == :tracked do
+        now = DateTime.utc_now()
+        new_flights = inject_missing_tracked(new_state.flights, new_state, now)
+        %{new_state | flights: new_flights}
+      else
+        new_state
+      end
+
     request_missing_enrichment(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
@@ -244,7 +305,7 @@ defmodule AeroVision.Flight.Tracker do
   def handle_info({:config_changed, :airport_filters, value}, state) do
     # Pull cached enrichment data from ETS into state immediately so the
     # airport filter can act on it right now, without waiting for the
-    # next AeroAPI tick.
+    # next Skylink tick.
     new_state =
       %{state | airport_filters: value}
       |> merge_cached_enrichment()
@@ -291,10 +352,10 @@ defmodule AeroVision.Flight.Tracker do
 
   # ──────────────────────────────────────────────── enrichment gating ──
 
-  # Pull cached FlightInfo from the AeroAPI ETS table into any tracked flights
+  # Pull cached FlightInfo from the Skylink ETS table into any tracked flights
   # that are missing enrichment. This is called synchronously when filter
   # config changes so the new filter can act on cached data immediately,
-  # without waiting for the next AeroAPI tick.
+  # without waiting for the next Skylink tick.
   # For cache misses, queues an enrichment request as usual.
   defp merge_cached_enrichment(state) do
     updated_flights =
@@ -308,11 +369,11 @@ defmodule AeroVision.Flight.Tracker do
             {callsign, tracked}
 
           true ->
-            case AeroAPI.get_cached(callsign) do
+            case FlightStatus.get_cached(callsign) do
               nil ->
                 # Not in cache — queue enrichment for later
                 if should_enrich?(callsign, state) do
-                  AeroAPI.enrich(callsign)
+                  FlightStatus.enrich(callsign)
                 end
 
                 {callsign, tracked}
@@ -328,8 +389,44 @@ defmodule AeroVision.Flight.Tracker do
     %{state | flights: updated_flights}
   end
 
+  # In tracked mode, ensure every tracked callsign has an entry in the flights map.
+  # For callsigns without ADS-B data, creates a synthetic TrackedFlight with nil
+  # telemetry. For existing synthetic entries, refreshes last_seen_at to prevent
+  # stale pruning.
+  defp inject_missing_tracked(flights, state, now) do
+    state.tracked_flights
+    |> Enum.reduce(flights, fn tracked_entry, acc ->
+      match = Enum.find(acc, fn {cs, _} -> callsign_matches?(cs, tracked_entry) end)
+
+      case match do
+        {cs, %TrackedFlight{state_vector: %StateVector{baro_altitude: nil}} = existing} ->
+          # Existing synthetic entry (no real telemetry) — refresh last_seen_at
+          Map.put(acc, cs, %{existing | last_seen_at: now})
+
+        {_cs, _real_flight} ->
+          # Has real ADS-B data — leave it alone
+          acc
+
+        nil ->
+          # Not in flights at all — create synthetic entry
+          callsign = String.upcase(tracked_entry)
+          cached_info = FlightStatus.get_cached(callsign)
+          if is_nil(cached_info), do: FlightStatus.enrich(callsign)
+
+          synthetic = %TrackedFlight{
+            state_vector: %StateVector{callsign: callsign},
+            flight_info: cached_info,
+            first_seen_at: now,
+            last_seen_at: now
+          }
+
+          Map.put(acc, callsign, synthetic)
+      end
+    end)
+  end
+
   # For each flight currently in state that passes the active filter but has no
-  # enrichment, request AeroAPI enrichment. Called after filter config changes.
+  # enrichment, request Skylink enrichment. Called after filter config changes.
   defp request_missing_enrichment(state) do
     state.flights
     |> Map.values()
@@ -337,7 +434,7 @@ defmodule AeroVision.Flight.Tracker do
       callsign = tracked.state_vector.callsign
 
       if callsign && is_nil(tracked.flight_info) && should_enrich?(callsign, state) do
-        AeroAPI.enrich(callsign)
+        FlightStatus.enrich(callsign)
       end
     end)
   end

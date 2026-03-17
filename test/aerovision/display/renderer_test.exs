@@ -2,31 +2,41 @@ defmodule AeroVision.Display.RendererTest do
   use ExUnit.Case, async: true
   alias AeroVision.Display.Renderer
 
-  # ──────────────────────────────────────────────── format_time/1 ──
+  # ──────────────────────────────────────────────── format_time/2 ──
 
-  describe "format_time/1" do
+  describe "format_time/2" do
     test "nil returns '--:--'" do
-      assert Renderer.format_time(nil) == "--:--"
+      assert Renderer.format_time(nil, "Etc/UTC") == "--:--"
     end
 
     test "formats hour and minute correctly" do
       dt = ~U[2026-03-15 14:30:00Z]
-      assert Renderer.format_time(dt) == "14:30"
+      assert Renderer.format_time(dt, "Etc/UTC") == "14:30"
     end
 
     test "zero-pads single-digit minute" do
       dt = ~U[2026-03-15 09:05:00Z]
-      assert Renderer.format_time(dt) == "09:05"
+      assert Renderer.format_time(dt, "Etc/UTC") == "09:05"
     end
 
     test "midnight is formatted as 00:00" do
       dt = ~U[2026-03-15 00:00:00Z]
-      assert Renderer.format_time(dt) == "00:00"
+      assert Renderer.format_time(dt, "Etc/UTC") == "00:00"
     end
 
     test "end of day 23:59 is formatted correctly" do
       dt = ~U[2026-03-15 23:59:00Z]
-      assert Renderer.format_time(dt) == "23:59"
+      assert Renderer.format_time(dt, "Etc/UTC") == "23:59"
+    end
+
+    test "converts UTC to America/New_York (EDT, -4h)" do
+      dt = ~U[2026-03-15 14:30:00Z]
+      assert Renderer.format_time(dt, "America/New_York") == "10:30"
+    end
+
+    test "falls back to UTC for an invalid timezone" do
+      dt = ~U[2026-03-15 14:30:00Z]
+      assert Renderer.format_time(dt, "invalid/timezone") == "14:30"
     end
   end
 

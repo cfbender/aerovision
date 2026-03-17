@@ -31,11 +31,11 @@ defmodule AeroVision.Config.Store do
     display_brightness: 80,
     display_cycle_seconds: 8,
     display_mode: :nearby,
-    poll_interval_sec: 15,
     units: :imperial,
+    timezone: "America/New_York",
+    skylink_api_key: nil,
     opensky_client_id: nil,
-    opensky_client_secret: nil,
-    aeroapi_key: nil
+    opensky_client_secret: nil
   }
 
   # Keys whose values are atoms (need string→atom conversion on read)
@@ -288,7 +288,7 @@ defmodule AeroVision.Config.Store do
   end
 
   defp coerce(key, raw)
-       when key in [:display_brightness, :display_cycle_seconds, :poll_interval_sec] do
+       when key in [:display_brightness, :display_cycle_seconds] do
     case Integer.parse(raw) do
       {i, _} -> {:ok, i}
       :error -> :error
@@ -312,6 +312,8 @@ defmodule AeroVision.Config.Store do
 
     {:ok, items}
   end
+
+  defp coerce(:timezone, raw) when is_binary(raw) and raw != "", do: {:ok, raw}
 
   # :radius_mi is handled separately above — skip here
   defp coerce(:radius_mi, _), do: :error

@@ -1,6 +1,6 @@
 # ✈ AeroVision
 
-A real-time flight tracking LED display built on a Raspberry Pi Zero 2 W. AeroVision polls live ADS-B data from the OpenSky Network and renders a full flight information card — callsign, aircraft type, route, altitude, speed, heading, departure/arrival times, and a progress bar — on a 64×64 HUB75 LED matrix panel.
+A real-time flight tracking LED display built on a Raspberry Pi Zero 2 W. AeroVision polls live ADS-B data and renders a full flight information card — callsign, aircraft type, route, altitude, speed, heading, departure/arrival times, and a progress bar — on a 64×64 HUB75 LED matrix panel.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -113,48 +113,27 @@ Pin 40  GPIO21
 
 ## API Keys
 
-### OpenSky Network (Required — Free)
+AeroVision uses two data sources — one for each display mode. Both are optional but at least one must be configured.
 
-OpenSky Network provides real-time ADS-B position data for aircraft worldwide. AeroVision polls it every 15 seconds to find flights overhead.
+### Skylink API (Tracked mode + enrichment)
 
-1. Create a free account at **[opensky-network.org](https://opensky-network.org)**
-2. Log in and go to **Account → My Account**
-3. Scroll to **API credentials** or **OAuth2 clients**
-4. Create a new OAuth2 client — you'll receive a **Client ID** and **Client Secret**
-5. Enter these in the AeroVision setup wizard (Step 2: API Keys) or under **Settings → API Keys**
+Skylink is used in **tracked mode** (polling every 5 minutes by callsign) and provides flight status enrichment (airline, route, departure/arrival times) for all modes.
 
-**Rate limits (free tier)**:
-- ~400 API credits/day for registered users
-- 1 credit per bounding box query (used by AeroVision)
-- At 15-second polling intervals, that's ~5,760 queries/day — well within limits if you keep the poll interval at 60 seconds or higher for a busy bounding box
+1. Go to **[rapidapi.com/skylink-api-skylink-api-default/api/skylink-api](https://rapidapi.com/skylink-api-skylink-api-default/api/skylink-api)**
+2. Sign in or create a free RapidAPI account
+3. Subscribe to the Skylink API (free tier available)
+4. Your key is shown under **Security → X-RapidAPI-Key**
+5. Enter it in the setup wizard or under **Settings → API Keys**
 
-> **Note**: Anonymous access (no credentials) has stricter limits (~100 credits/day) and may be blocked entirely. Registering is free and strongly recommended.
+### OpenSky Network (Nearby mode)
 
----
+OpenSky is used in **nearby mode** (polling every 30 seconds by bounding box). It's free and has generous rate limits for regional scanning.
 
-### FlightAware AeroAPI (Optional — ~$0–2/month)
+1. Register at **[opensky-network.org](https://opensky-network.org)**
+2. Your username is the **Client ID** and your password is the **Client Secret**
+3. Enter both in the setup wizard or under **Settings → API Keys**
 
-AeroAPI enriches each flight with the airline name, aircraft type, origin/destination airports, and departure/arrival times. Without it, AeroVision shows callsigns and positions only.
-
-1. Go to **[flightaware.com/aeroapi/signup/personal](https://www.flightaware.com/aeroapi/signup/personal)**
-2. Choose the **Personal** tier:
-   - **Free up to $5/month** (or $10/month if you feed ADS-B data to FlightAware)
-   - No monthly minimum
-   - Personal/academic use only
-3. Create or log into your FlightAware account
-4. After signing up, visit the **[AeroAPI portal](https://www.flightaware.com/aeroapi/portal)**
-5. Your **API key** is shown in the portal dashboard
-6. Enter it in the AeroVision setup wizard or **Settings → API Keys**
-
-**Cost estimate for AeroVision**:
-
-AeroVision calls `GET /flights/{ident}` to enrich each new callsign it sees. This endpoint costs **$0.005 per result set**. Results are cached for 1 hour, so each unique flight is only queried once per hour.
-
-- Typical overhead: 5–20 unique flights/hour = $0.025–0.10/hour
-- Running 8 hours/day: ~$0.20–0.80/day → **$6–24/month worst case**
-- In practice, most locations see 3–8 unique flights/hour → **well under $5/month**
-
-> **Tip**: If you run AeroVision 24/7 and fly over a busy hub airport, monitor your AeroAPI usage in the portal for the first few days.
+If OpenSky credentials are not configured, AeroVision falls back to Skylink for nearby mode. If Skylink is not configured, OpenSky is used for tracked mode (global fetch filtered by callsign).
 
 ---
 
@@ -164,9 +143,11 @@ You can run AeroVision on your development machine to iterate on the web UI and 
 
 ### Prerequisites
 
-- **Elixir 1.17+** and **Erlang/OTP 27+** — [install via asdf](https://github.com/asdf-vm/asdf) or [Homebrew](https://brew.sh)
-- **Go 1.22+** — [golang.org/dl](https://golang.org/dl/)
+- **Elixir 1.19.5-otp-28** and **Erlang/OTP 28.3.1**
+- **Go 1.26.0**
 - **Git**
+
+The repo includes a `mise.toml` with pinned versions. If you use [mise](https://mise.jdx.dev/), run `mise install` in the project root to get the correct toolchain automatically. Otherwise install manually via [asdf](https://github.com/asdf-vm/asdf), [Homebrew](https://brew.sh), or [golang.org/dl](https://golang.org/dl/).
 
 ### Quick Start
 
@@ -196,10 +177,10 @@ Visit **[http://localhost:4000](http://localhost:4000)** — the setup wizard wi
 All settings can be seeded from a `.env` file in the project root at **build time** — values are compiled into the firmware so no file needs to be copied to the device. Values are only applied if the setting hasn't already been saved through the UI — manual changes always take precedence.
 
 ```bash
-# API Keys (required for flight data)
-OPENSKY_CLIENT_ID=your_client_id
-OPENSKY_CLIENT_SECRET=your_client_secret
-AEROAPI_KEY=your_aeroapi_key           # optional enrichment
+# API Keys
+SKYLINK_API_KEY=your-rapidapi-key-here   # tracked mode ADS-B + enrichment
+OPENSKY_CLIENT_ID=your-username          # nearby mode ADS-B (free)
+OPENSKY_CLIENT_SECRET=your-password      # nearby mode ADS-B (free)
 
 # WiFi — pre-configuring these skips the setup wizard on first boot
 WIFI_SSID=MyHomeNetwork
@@ -215,9 +196,9 @@ RADIUS_KM=40.234                       # km     (used if RADIUS_MI is not set)
 DISPLAY_BRIGHTNESS=80                  # 1–100
 DISPLAY_CYCLE_SECONDS=8                # seconds per flight card
 DISPLAY_MODE=nearby                    # nearby | tracked
+TIMEZONE=America/New_York              # IANA timezone for displayed times
 
 # Flight filters
-POLL_INTERVAL_SEC=15
 UNITS=imperial                         # imperial | metric
 TRACKED_FLIGHTS=AAL123,DAL456          # comma-separated callsigns
 AIRLINE_FILTERS=AAL,DAL                # comma-separated ICAO operator codes
@@ -349,7 +330,7 @@ The setup wizard walks you through three steps. **The device stays in AP mode fo
 Tap **Scan** to find nearby networks, or type your SSID manually. Enter your password and tap **Save & Continue**. The credentials are saved immediately but the connection doesn't happen yet.
 
 **Step 2 — API Keys**
-Enter your OpenSky Client ID and Secret (required) and optionally your FlightAware AeroAPI key. See the [API Keys](#api-keys) section above for how to obtain these.
+Enter your Skylink API key and/or OpenSky credentials. At least one source must be configured. See the [API Keys](#api-keys) section above.
 
 **Step 3 — Location**
 Enter your latitude, longitude, and search radius. AeroVision will scan for all flights within this radius of your location.
@@ -383,25 +364,27 @@ The QR code is useful when the device's IP address changes and you can't reach `
 
 All settings are accessible at **[http://aerovision.local/settings](http://aerovision.local/settings)**. Settings are stored in a JSON file at `/data/aerovision/config/settings.json` on the device's writable partition. The file is written atomically (write-then-rename), so settings survive unexpected power loss and firmware updates.
 
+Settings are organized with **Display Mode** at the top so you can quickly switch between nearby and tracked. Location, airline, and airport filters are hidden when in tracked mode since they don't apply.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Location** — Latitude | 35.7721 | Center of the search area |
-| **Location** — Longitude | -78.63861 | Center of the search area |
-| **Location** — Radius | 50 km | How far out to scan for flights |
 | **Display Mode** | Nearby | `Nearby` = all flights in radius; `Tracked` = specific callsigns only |
-| **Tracked Flights** | (empty) | Callsigns to monitor in Tracked mode (e.g., `AAL123`) |
-| **Airline Filters** | (empty) | Filter Nearby mode by ICAO operator prefix (e.g., `AAL` for American Airlines) |
+| **Location** — Latitude | 35.7721 | Center of the nearby search area |
+| **Location** — Longitude | -78.63861 | Center of the nearby search area |
+| **Location** — Radius | 50 km | How far out to scan for flights (nearby mode only) |
+| **Tracked Flights** | (empty) | Callsigns to monitor in Tracked mode (e.g., `DAL1192`). Flights are shown even when outside ADS-B coverage — enrichment data (route, times, progress) is displayed with `---` for live telemetry. |
+| **Airline Filters** | (empty) | Filter Nearby mode by ICAO operator prefix (e.g., `AAL` for American) |
 | **Airport Filters** | (empty) | Filter by origin or destination IATA/ICAO code (e.g., `RDU`) |
 | **Brightness** | 80% | LED panel brightness (1–100) |
 | **Cycle Interval** | 8 seconds | How long each flight is displayed before cycling |
-| **Poll Interval** | 15 seconds | How often to check for new flights |
-| **Units** | Imperial | `Imperial` (ft, kt, mi) or `Metric` (m, km/h, km) |
-| **OpenSky Client ID** | (none) | OAuth2 client ID from opensky-network.org |
-| **OpenSky Client Secret** | (none) | OAuth2 client secret from opensky-network.org |
-| **AeroAPI Key** | (none) | FlightAware AeroAPI key (optional enrichment) |
+| **Timezone** | America/New_York | IANA timezone for departure/arrival time display. Quick-select buttons for ET/CT/MT/PT/UTC. |
+| **Units** | Imperial | `Imperial` (ft, kt) or `Metric` (m, km/h) |
+| **Skylink API Key** | (none) | RapidAPI key — tracked mode ADS-B + flight status enrichment for all modes |
+| **OpenSky Client ID** | (none) | OpenSky username — nearby mode ADS-B (30s updates) |
+| **OpenSky Client Secret** | (none) | OpenSky password — nearby mode ADS-B (30s updates) |
 | **WiFi SSID** | (none) | Home network name |
 
-The Settings page also includes **Reboot** and **Shut Down** buttons under the System section. Shut Down powers off the Pi safely — you will need to physically unplug and replug the power to turn it back on.
+The Settings page also includes a **🗑️ Purge Flight Cache** button under the System section (clears enrichment cache and tracked flights, useful when data appears stale) and **Reboot** / **Shut Down** buttons. Shut Down powers off the Pi safely.
 
 ### Finding Airline ICAO Codes
 
@@ -431,8 +414,9 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 │  AeroVision.Application (OTP Supervisor)                    │
 │    ├── Config.Store          JSON file on /data partition   │
 │    ├── Network.Manager       WiFi + AP fallback (VintageNet)│
-│    ├── Flight.AeroAPI        FlightAware enrichment + cache │
-│    ├── Flight.OpenSky        ADS-B poller (15s interval)    │
+│    ├── Flight.Skylink.FlightStatus  Enrichment + cache      │
+│    ├── Flight.Skylink.ADSB         ADS-B poller (tracked, 5min) │
+│    ├── Flight.OpenSky              ADS-B poller (nearby, 30s)   │
 │    ├── Flight.Tracker        State aggregation + filtering  │
 │    ├── Display.Driver        Go port manager (packet:4)     │
 │    ├── Display.Renderer      Frame builder + display modes  │
@@ -450,11 +434,12 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 ```
 
 **Data flow**:
-1. `OpenSky` polls the OpenSky Network API every 15 seconds, filtering by bounding box
-2. `Tracker` merges new state vectors with enriched data from `AeroAPI`
-3. `Renderer` builds display commands and sends them to `Driver`
-4. `Driver` forwards commands to the Go binary via stdin (4-byte length-prefixed JSON)
-5. The Go binary renders to the LED matrix using double-buffered vsync swaps
+1. `OpenSky` polls every 30 seconds in nearby mode (bounding box); `Skylink.ADSB` polls every 5 minutes in tracked mode (by callsign). Each source only polls when active — they don't overlap. Automatic cross-fallback if a source has no credentials.
+2. Both sources broadcast `{:flights_raw, vectors}` on the same PubSub topic. `Tracker` consumes from both.
+3. `Tracker` merges new state vectors with enriched data from `Skylink.FlightStatus`. In tracked mode, flights with no ADS-B coverage (e.g., over oceans) are shown using enrichment data only, with `---` for live telemetry.
+4. `Renderer` builds display commands and sends them to `Driver`
+5. `Driver` forwards commands to the Go binary via stdin (4-byte length-prefixed JSON)
+6. The Go binary renders to the LED matrix using double-buffered vsync swaps
 
 **Display commands**:
 - `flight_card` — renders a full flight information card
@@ -466,9 +451,9 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 
 **Rendering**: The Go binary uses hzeller's double-buffering API (`led_matrix_create_offscreen_canvas` + `led_matrix_swap_on_vsync`). All drawing happens on an invisible offscreen canvas; `Render()` swaps it to the display atomically at vsync, eliminating flicker from the clear→draw cycle.
 
-**Idle animation**: When no flights are in range, the `scan_anim` goroutine flies a 16×16 top-down airplane sprite across the display. Each pass picks a random cardinal diagonal (NE/SE/SW/NW) and entry position. The sprite is pre-rotated at startup into all 4 orientations using pixel-level rotation of the NE master sprite. The animation goroutine checks if it's already running before starting — sending `scan_anim` repeatedly (e.g. on each OpenSky poll) does not restart or interrupt the animation.
+**Idle animation**: When no flights are in range, the `scan_anim` goroutine flies a 16×16 top-down airplane sprite across the display. Each pass picks a random cardinal diagonal (NE/SE/SW/NW) and entry position. The sprite is pre-rotated at startup into all 4 orientations using pixel-level rotation of the NE master sprite. The animation goroutine checks if it's already running before starting — sending `scan_anim` repeatedly (e.g. on each ADS-B poll) does not restart or interrupt the animation.
 
-**Settings storage**: Configuration is written atomically to `settings.json` using write-then-rename. A crash mid-write leaves the previous file untouched. Flight enrichment data (AeroAPI responses) is cached separately in CubDB — cache loss on a bad shutdown is harmless.
+**Settings storage**: Configuration is written atomically to `settings.json` using write-then-rename. A crash mid-write leaves the previous file untouched. Flight enrichment data (Skylink FlightStatus responses) is cached separately in CubDB — cache loss on a bad shutdown is harmless.
 
 **Build-time config injection**: `config/config.exs` reads `.env` at `mix firmware` time and compiles the values into the firmware as application config (`Application.get_env(:aerovision, :env_seeds)`). The device reads from application config at startup — no file I/O needed on the device.
 
@@ -491,10 +476,13 @@ The Pi Zero 2 W (BCM2710A1) toggles GPIO faster than some panels' shift register
 - Verify the power supply is adequate — voltage sag under load causes display instability
 
 ### No flights appearing on the display
-1. Check that your OpenSky credentials are entered correctly in Settings
-2. Verify your location is set correctly — the default is Raleigh, NC
-3. Try increasing the radius (e.g., 100km for rural areas)
-4. Check if OpenSky is up: `curl "https://opensky-network.org/api/states/all?lamin=35&lomin=-79&lamax=36&lomax=-77"` from a terminal
+1. Verify at least one ADS-B source is configured in **Settings → API Keys**
+   - **Nearby mode**: OpenSky credentials (preferred) or Skylink API key
+   - **Tracked mode**: Skylink API key (preferred) or OpenSky credentials
+2. Verify your location is set correctly — the default is Raleigh, NC (nearby mode only)
+3. Try increasing the radius (e.g., 100km for rural areas) in nearby mode
+4. In tracked mode, the flight card appears even without ADS-B coverage (shows enrichment data). If it's missing entirely, the callsign may not be found by the Flight Status API — verify it's the correct ICAO callsign (e.g., `DAL1192`, not `DL1192`)
+5. Use **Settings → System → 🗑️ Purge Flight Cache** if enrichment data appears stale
 
 ### WiFi setup wizard drops connection during scan
 This was a known issue where saving WiFi credentials would immediately trigger a reconnect, dropping the AP. It's fixed — credentials are saved but the actual connection is deferred until you complete all wizard steps.
@@ -529,15 +517,19 @@ The `/preview` page works on both host and the real device. On the device, a sep
 
 ```
 aerovision/
+├── mise.toml                     # Pinned tool versions (Elixir, Erlang, Go)
 ├── lib/
 │   ├── aerovision/
 │   │   ├── application.ex        # OTP supervision tree
-│   │   ├── db.ex                 # CubDB wrapper (AeroAPI enrichment cache)
+│   │   ├── db.ex                 # CubDB wrapper (enrichment cache)
 │   │   ├── config/store.ex       # Atomic JSON settings, build-time env seeding
 │   │   ├── network/manager.ex    # WiFi + AP mode (VintageNet)
 │   │   ├── flight/
-│   │   │   ├── opensky.ex        # OpenSky ADS-B poller
-│   │   │   ├── aero_api.ex       # FlightAware enrichment + CubDB cache
+│   │   │   ├── skylink/
+│   │   │   │   ├── adsb.ex           # Skylink ADS-B poller (tracked mode, 5min)
+│   │   │   │   └── flight_status.ex  # Flight status enrichment + CubDB cache
+│   │   │   ├── opensky.ex            # OpenSky ADS-B poller (nearby mode, 30s)
+│   │   │   ├── airport_timezones.ex  # IATA → IANA timezone static map
 │   │   │   ├── tracker.ex        # State aggregation + filtering
 │   │   │   └── geo_utils.ex      # Haversine, unit conversion
 │   │   ├── display/

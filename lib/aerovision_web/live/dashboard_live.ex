@@ -2,7 +2,6 @@ defmodule AeroVisionWeb.DashboardLive do
   use AeroVisionWeb, :live_view
 
   alias AeroVision.Flight.Tracker
-  alias AeroVision.Flight.GeoUtils
 
   @impl true
   def mount(_params, _session, socket) do
@@ -94,15 +93,23 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   def handle_event("setup_api_keys", %{"api_keys" => params}, socket) do
-    client_id = String.trim(params["opensky_client_id"] || "")
-    client_secret = String.trim(params["opensky_client_secret"] || "")
-    aeroapi_key = String.trim(params["aeroapi_key"] || "")
+    skylink_api_key = String.trim(params["skylink_api_key"] || "")
+    opensky_id = String.trim(params["opensky_client_id"] || "")
+    opensky_secret = String.trim(params["opensky_client_secret"] || "")
 
-    if client_id != "" do
-      AeroVision.Config.Store.put(:opensky_client_id, client_id)
-      AeroVision.Config.Store.put(:opensky_client_secret, client_secret)
-      AeroVision.Config.Store.put(:aeroapi_key, aeroapi_key)
+    if skylink_api_key != "" do
+      AeroVision.Config.Store.put(:skylink_api_key, skylink_api_key)
     end
+
+    AeroVision.Config.Store.put(
+      :opensky_client_id,
+      if(opensky_id == "", do: nil, else: opensky_id)
+    )
+
+    AeroVision.Config.Store.put(
+      :opensky_client_secret,
+      if(opensky_secret == "", do: nil, else: opensky_secret)
+    )
 
     config = AeroVision.Config.Store.all()
     {:noreply, assign(socket, setup_step: compute_setup_step(config))}
@@ -464,50 +471,71 @@ defmodule AeroVisionWeb.DashboardLive do
               <span class="text-2xl">🔑</span>
               <div>
                 <h2 class="text-lg font-semibold text-white">API Keys</h2>
-                <p class="text-xs text-gray-500">Connect to flight data providers.</p>
+                <p class="text-xs text-gray-500">Configure at least one ADS-B source.</p>
               </div>
             </div>
-            <.form for={%{}} as={:api_keys} phx-submit="setup_api_keys" class="space-y-3">
+            <.form for={%{}} as={:api_keys} phx-submit="setup_api_keys" class="space-y-4">
+              <%!-- Skylink section --%>
               <div class="space-y-1">
                 <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                  OpenSky Client ID
-                </label>
-                <input
-                  type="text"
-                  name="api_keys[opensky_client_id]"
-                  value=""
-                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="your-client-id"
-                  autocomplete="off"
-                />
-              </div>
-              <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                  OpenSky Client Secret
+                  Skylink API Key
                 </label>
                 <input
                   type="password"
-                  name="api_keys[opensky_client_secret]"
+                  name="api_keys[skylink_api_key]"
                   value=""
                   class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                   placeholder="••••••••"
                   autocomplete="new-password"
                 />
+                <p class="text-xs text-gray-600">
+                  Tracked mode ADS-B + flight status enrichment.
+                </p>
               </div>
-              <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                  FlightAware AeroAPI Key
-                </label>
-                <input
-                  type="password"
-                  name="api_keys[aeroapi_key]"
-                  value=""
-                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="••••••••"
-                  autocomplete="new-password"
-                />
-                <p class="text-xs text-gray-600">Optional — enables airline and route enrichment.</p>
+
+              <%!-- Divider --%>
+              <div class="border-t border-gray-800" />
+
+              <%!-- OpenSky section --%>
+              <div class="space-y-3">
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                    OpenSky Client ID
+                  </label>
+                  <input
+                    type="text"
+                    name="api_keys[opensky_client_id]"
+                    value=""
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="username"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                    OpenSky Client Secret
+                  </label>
+                  <input
+                    type="password"
+                    name="api_keys[opensky_client_secret]"
+                    value=""
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="••••••••"
+                    autocomplete="new-password"
+                  />
+                </div>
+                <p class="text-xs text-gray-600">
+                  Nearby mode ADS-B (30s updates). Free at
+                  <a
+                    href="https://opensky-network.org"
+                    target="_blank"
+                    class="text-cyan-500 hover:underline"
+                  >
+                    opensky-network.org
+                  </a>
+                </p>
               </div>
+
               <button
                 type="submit"
                 class="w-full px-4 py-2.5 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-semibold rounded-md transition-colors"
@@ -639,7 +667,9 @@ defmodule AeroVisionWeb.DashboardLive do
       assign(assigns,
         callsign: sv.callsign || "---",
         airline: (fi && fi.airline_name) || "Unknown",
-        aircraft: (fi && fi.aircraft_type) || "---",
+        aircraft:
+          (fi && fi.aircraft_type) || abbreviate_aircraft_type(sv && sv.aircraft_type_name) ||
+            "---",
         altitude: format_altitude(sv.baro_altitude),
         speed: format_speed(sv.velocity),
         bearing: format_bearing(sv.true_track),
@@ -710,15 +740,27 @@ defmodule AeroVisionWeb.DashboardLive do
 
   @on_target Application.compile_env(:aerovision, :target, :host) != :host
 
-  defp compute_setup_step(_config) when not @on_target, do: :done
-
   defp compute_setup_step(config) do
-    cond do
-      is_nil(config.wifi_ssid) or config.wifi_ssid == "" -> :wifi
-      is_nil(config.opensky_client_id) or config.opensky_client_id == "" -> :api_keys
-      config.location_lat == 35.7721 and config.location_lon == -78.63861 -> :location
-      true -> :done
+    if @on_target do
+      cond do
+        is_nil(config.wifi_ssid) or config.wifi_ssid == "" -> :wifi
+        not has_adsb_source?(config) -> :api_keys
+        config.location_lat == 35.7721 and config.location_lon == -78.63861 -> :location
+        true -> :done
+      end
+    else
+      :done
     end
+  end
+
+  defp has_adsb_source?(config) do
+    skylink_ok = is_binary(config.skylink_api_key) and config.skylink_api_key != ""
+
+    opensky_ok =
+      is_binary(config.opensky_client_id) and config.opensky_client_id != "" and
+        is_binary(config.opensky_client_secret) and config.opensky_client_secret != ""
+
+    skylink_ok or opensky_ok
   end
 
   defp parse_float(s) when is_binary(s) do
@@ -732,8 +774,8 @@ defmodule AeroVisionWeb.DashboardLive do
 
   defp format_altitude(nil), do: "---"
 
-  defp format_altitude(meters) do
-    ft = round(GeoUtils.meters_to_feet(meters))
+  defp format_altitude(feet) do
+    ft = round(feet)
 
     if ft >= 18_000 do
       "FL#{div(ft, 100)}"
@@ -743,7 +785,7 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   defp format_speed(nil), do: "---"
-  defp format_speed(ms), do: "#{round(GeoUtils.ms_to_knots(ms))}kt"
+  defp format_speed(knots), do: "#{round(knots)}kt"
 
   defp format_bearing(nil), do: "---"
 
@@ -759,6 +801,46 @@ defmodule AeroVisionWeb.DashboardLive do
   defp format_airport(%{iata: iata}) when is_binary(iata) and iata != "", do: iata
   defp format_airport(%{icao: icao}) when is_binary(icao), do: icao
   defp format_airport(_), do: "---"
+
+  # Convert full aircraft type names from Skylink to ICAO-style short codes.
+  # "Boeing 737-800" → "B738", "Airbus A321-200" → "A321", "Embraer E175" → "E175"
+  defp abbreviate_aircraft_type(nil), do: nil
+
+  defp abbreviate_aircraft_type(name) when is_binary(name) do
+    abbreviate_boeing(name) ||
+      abbreviate_airbus(name) ||
+      abbreviate_embraer(name) ||
+      abbreviate_crj(name)
+  end
+
+  defp abbreviate_boeing(name) do
+    case Regex.run(~r/Boeing\s+(\d{3})(?:[- ](\d))?/i, name) do
+      [_, model, variant_digit] -> "B#{String.slice(model, 0, 2)}#{variant_digit}"
+      [_, model] -> "B#{model}"
+      _ -> nil
+    end
+  end
+
+  defp abbreviate_airbus(name) do
+    case Regex.run(~r/(A\d{3})/i, name) do
+      [_, code] -> String.upcase(code)
+      _ -> nil
+    end
+  end
+
+  defp abbreviate_embraer(name) do
+    case Regex.run(~r/(E\d{2,3})/i, name) do
+      [_, code] -> String.upcase(code)
+      _ -> nil
+    end
+  end
+
+  defp abbreviate_crj(name) do
+    case Regex.run(~r/CRJ[- ]?(\d)/i, name) do
+      [_, digit] -> "CRJ#{digit}"
+      _ -> nil
+    end
+  end
 
   # Format a number with comma thousands separators (avoids Number.Delimited dep)
   defp format_number(n) when is_integer(n) do

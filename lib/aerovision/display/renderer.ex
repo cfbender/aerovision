@@ -17,8 +17,8 @@ defmodule AeroVision.Display.Renderer do
   use GenServer
   require Logger
 
+  alias AeroVision.Config.Store
   alias AeroVision.Display.Driver
-  alias AeroVision.Flight.GeoUtils
   alias AeroVision.Network.Manager, as: NetworkManager
 
   @pubsub AeroVision.PubSub
@@ -49,7 +49,7 @@ defmodule AeroVision.Display.Renderer do
     Phoenix.PubSub.subscribe(@pubsub, "network")
     Phoenix.PubSub.subscribe(@pubsub, "gpio")
 
-    cycle_seconds = AeroVision.Config.Store.get(:display_cycle_seconds) || @default_cycle_seconds
+    cycle_seconds = Store.get(:display_cycle_seconds) || @default_cycle_seconds
 
     # Start in AP mode immediately if we're not on WiFi yet — avoids briefly
     # showing the scan animation before the network :ap_mode broadcast arrives.
@@ -129,7 +129,7 @@ defmodule AeroVision.Display.Renderer do
 
   def handle_info({:config_changed, :display_brightness, brightness}, state) do
     Logger.info("[Display.Renderer] Brightness updated to #{brightness}")
-    Driver.send_command(%{cmd: "set_brightness", value: brightness})
+    Driver.send_command(%{cmd: "brightness", value: brightness})
     {:noreply, state}
   end
 
@@ -287,21 +287,22 @@ defmodule AeroVision.Display.Renderer do
   defp build_flight_card(flight) do
     sv = flight.state_vector
     fi = flight.flight_info
+    timezone = Store.get(:timezone)
 
     %{
       cmd: "flight_card",
       airline: airline_name(fi),
-      operator: fi && fi.operator,
+      operator: derive_operator(fi, sv),
       flight: flight_ident(fi, sv),
-      aircraft: aircraft_type(fi),
+      aircraft: aircraft_type(fi, sv),
       route_origin: airport_code(fi && fi.origin),
       route_dest: airport_code(fi && fi.destination),
-      altitude_ft: sv.baro_altitude |> GeoUtils.meters_to_feet() |> safe_round(),
-      speed_kt: sv.velocity |> GeoUtils.ms_to_knots() |> safe_round(),
+      altitude_ft: sv.baro_altitude |> safe_round(),
+      speed_kt: sv.velocity |> safe_round(),
       bearing_deg: sv.true_track |> safe_round(),
-      vrate_fpm: sv.vertical_rate |> meters_per_sec_to_fpm(),
-      dep_time: format_time(fi && fi.departure_time),
-      arr_time: format_time(fi && fi.arrival_time),
+      vrate_fpm: sv.vertical_rate |> safe_round(),
+      dep_time: format_time(fi && fi.departure_time, timezone),
+      arr_time: format_time(fi && fi.arrival_time, timezone),
       progress: (fi && fi.progress_pct) || 0.0,
       airline_color: [0, 200, 220]
     }
@@ -313,8 +314,10 @@ defmodule AeroVision.Display.Renderer do
   defp flight_ident(nil, sv), do: sv.callsign
   defp flight_ident(fi, sv), do: fi.ident || sv.callsign
 
-  defp aircraft_type(nil), do: "---"
-  defp aircraft_type(fi), do: fi.aircraft_type || "---"
+  defp aircraft_type(nil, sv), do: abbreviate_aircraft_type(sv.aircraft_type_name) || "---"
+
+  defp aircraft_type(fi, sv),
+    do: fi.aircraft_type || abbreviate_aircraft_type(sv.aircraft_type_name) || "---"
 
   defp airport_code(nil), do: nil
   defp airport_code(airport), do: airport.iata || airport.icao
@@ -322,16 +325,79 @@ defmodule AeroVision.Display.Renderer do
   defp upcase_safe(nil), do: nil
   defp upcase_safe(str), do: String.upcase(str)
 
+  # Extract ICAO airline operator code. Prefer FlightInfo.operator if available,
+  # otherwise extract the leading 2-3 letter ICAO prefix from the ADS-B callsign
+  # (e.g., "DAL" from "DAL1192"). This is used by the Go LED driver for logo lookup.
+  defp derive_operator(%{operator: op}, _sv) when is_binary(op) and op != "", do: op
+
+  defp derive_operator(_fi, %{callsign: cs}) when is_binary(cs) do
+    case Regex.run(~r/^([A-Z]{2,3})\d/, cs) do
+      [_, prefix] -> prefix
+      _ -> nil
+    end
+  end
+
+  defp derive_operator(_, _), do: nil
+
+  # Convert full aircraft type names from Skylink to ICAO-style short codes.
+  # "Boeing 737-800" → "B738", "Airbus A321-200" → "A321", "Embraer E175" → "E175"
+  defp abbreviate_aircraft_type(nil), do: nil
+
+  defp abbreviate_aircraft_type(name) when is_binary(name) do
+    abbreviate_boeing(name) ||
+      abbreviate_airbus(name) ||
+      abbreviate_embraer(name) ||
+      abbreviate_crj(name)
+  end
+
+  defp abbreviate_boeing(name) do
+    case Regex.run(~r/Boeing\s+(\d{3})(?:[- ](\d))?/i, name) do
+      [_, model, variant_digit] -> "B#{String.slice(model, 0, 2)}#{variant_digit}"
+      [_, model] -> "B#{model}"
+      _ -> nil
+    end
+  end
+
+  defp abbreviate_airbus(name) do
+    case Regex.run(~r/(A\d{3})/i, name) do
+      [_, code] -> String.upcase(code)
+      _ -> nil
+    end
+  end
+
+  defp abbreviate_embraer(name) do
+    case Regex.run(~r/(E\d{2,3})/i, name) do
+      [_, code] -> String.upcase(code)
+      _ -> nil
+    end
+  end
+
+  defp abbreviate_crj(name) do
+    case Regex.run(~r/CRJ[- ]?(\d)/i, name) do
+      [_, digit] -> "CRJ#{digit}"
+      _ -> nil
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helper functions
   # ---------------------------------------------------------------------------
 
-  @doc "Format a DateTime as HH:MM. Returns \"--:--\" if nil."
+  @doc "Format a DateTime as HH:MM in the given timezone. Returns \"--:--\" if nil."
+  def format_time(nil, _timezone), do: "--:--"
+
+  def format_time(%DateTime{} = dt, timezone) when is_binary(timezone) do
+    case DateTime.shift_zone(dt, timezone) do
+      {:ok, shifted} -> Calendar.strftime(shifted, "%H:%M")
+      {:error, _} -> Calendar.strftime(dt, "%H:%M")
+    end
+  end
+
+  @doc "Format a DateTime as HH:MM using the configured timezone. Returns \"--:--\" if nil."
   def format_time(nil), do: "--:--"
 
   def format_time(%DateTime{} = dt) do
-    dt
-    |> Calendar.strftime("%H:%M")
+    format_time(dt, Store.get(:timezone))
   end
 
   @doc "Convert m/s vertical rate to feet per minute."

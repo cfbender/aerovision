@@ -29,22 +29,15 @@ defmodule AeroVisionWeb.SettingsLive do
        display_mode: config.display_mode,
        display_brightness: config.display_brightness,
        display_cycle_seconds: config.display_cycle_seconds,
+       timezone: config.timezone,
        # Flights
        tracked_flights: config.tracked_flights,
        airline_filters: config.airline_filters,
        airport_filters: config.airport_filters,
        # API Keys
+       skylink_api_key: config.skylink_api_key || "",
        opensky_client_id: config.opensky_client_id || "",
        opensky_client_secret: config.opensky_client_secret || "",
-       aeroapi_key: config.aeroapi_key || "",
-       aeroapi_usage:
-         try do
-           AeroVision.Flight.AeroAPI.monthly_usage()
-         rescue
-           _ -> 0
-         catch
-           :exit, _ -> 0
-         end,
        # WiFi
        wifi_ssid: config.wifi_ssid || "",
        wifi_editing: config.wifi_ssid == nil,
@@ -61,6 +54,10 @@ defmodule AeroVisionWeb.SettingsLive do
   end
 
   @impl true
+  def handle_info({:config_changed, :timezone, value}, socket) do
+    {:noreply, assign(socket, timezone: value)}
+  end
+
   def handle_info({:config_changed, _key, _value}, socket) do
     {:noreply, socket}
   end
@@ -76,10 +73,6 @@ defmodule AeroVisionWeb.SettingsLive do
   def handle_info(:wifi_scan_complete, socket) do
     networks = AeroVision.Network.Manager.scan_networks()
     {:noreply, assign(socket, wifi_scanning: false, wifi_scan_results: networks)}
-  end
-
-  def handle_info({:aeroapi_usage, count}, socket) do
-    {:noreply, assign(socket, aeroapi_usage: count)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -128,20 +121,28 @@ defmodule AeroVisionWeb.SettingsLive do
   def handle_event("save_display_settings", %{"display_settings" => params}, socket) do
     brightness = parse_int(params["display_brightness"])
     cycle = parse_int(params["display_cycle_seconds"])
+    timezone = Map.get(params, "timezone", socket.assigns.timezone)
 
     if brightness && cycle do
       Store.put(:display_brightness, brightness)
       Store.put(:display_cycle_seconds, cycle)
+      Store.put(:timezone, timezone)
 
       {:noreply,
        assign(socket,
          display_brightness: brightness,
          display_cycle_seconds: cycle,
+         timezone: timezone,
          saved_flash: "display_settings"
        )}
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_event("set_timezone", %{"tz" => tz}, socket) do
+    Store.put(:timezone, tz)
+    {:noreply, assign(socket, timezone: tz, saved_flash: true)}
   end
 
   # ---- Tracked Flights --------------------------------------------------------
@@ -207,15 +208,19 @@ defmodule AeroVisionWeb.SettingsLive do
   # ---- API Keys ---------------------------------------------------------------
 
   def handle_event("save_api_keys", %{"api_keys" => params}, socket) do
-    Store.put(:opensky_client_id, params["opensky_client_id"])
-    Store.put(:opensky_client_secret, params["opensky_client_secret"])
-    Store.put(:aeroapi_key, params["aeroapi_key"])
+    skylink_api_key = String.trim(params["skylink_api_key"] || "")
+    opensky_id = String.trim(params["opensky_client_id"] || "")
+    opensky_secret = String.trim(params["opensky_client_secret"] || "")
+
+    Store.put(:skylink_api_key, skylink_api_key)
+    Store.put(:opensky_client_id, if(opensky_id == "", do: nil, else: opensky_id))
+    Store.put(:opensky_client_secret, if(opensky_secret == "", do: nil, else: opensky_secret))
 
     {:noreply,
      assign(socket,
-       opensky_client_id: params["opensky_client_id"],
-       opensky_client_secret: params["opensky_client_secret"],
-       aeroapi_key: params["aeroapi_key"],
+       skylink_api_key: skylink_api_key,
+       opensky_client_id: opensky_id,
+       opensky_client_secret: opensky_secret,
        saved_flash: "api_keys"
      )}
   end
@@ -283,6 +288,12 @@ defmodule AeroVisionWeb.SettingsLive do
     {:noreply, socket}
   end
 
+  def handle_event("purge_cache", _params, socket) do
+    AeroVision.Flight.Skylink.FlightStatus.clear_cache()
+    AeroVision.Flight.Tracker.clear_flights()
+    {:noreply, assign(socket, saved_flash: "cache_purged")}
+  end
+
   def handle_event("dismiss_flash", _params, socket) do
     {:noreply, assign(socket, saved_flash: nil)}
   end
@@ -298,61 +309,25 @@ defmodule AeroVisionWeb.SettingsLive do
           <h1 class="text-2xl font-bold text-white">Settings</h1>
           <%= if @saved_flash do %>
             <div
-              class="flex items-center gap-2 px-3 py-1.5 bg-emerald-900/60 border border-emerald-700 rounded-lg text-emerald-300 text-sm"
+              class={[
+                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm",
+                @saved_flash == "cache_purged" &&
+                  "bg-amber-900/60 border border-amber-700 text-amber-300",
+                @saved_flash != "cache_purged" &&
+                  "bg-emerald-900/60 border border-emerald-700 text-emerald-300"
+              ]}
               phx-click="dismiss_flash"
             >
-              <span>✓ Saved</span>
+              <%= if @saved_flash == "cache_purged" do %>
+                <span>✓ Cache purged</span>
+              <% else %>
+                <span>✓ Saved</span>
+              <% end %>
             </div>
           <% end %>
         </div>
-        
-    <!-- 1. Location -->
-        <.settings_card title="Location" icon="📍">
-          <.form for={%{}} as={:location} phx-submit="save_location" class="space-y-4">
-            <div class="grid grid-cols-2 gap-4">
-              <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">Latitude</label>
-                <input
-                  type="number"
-                  name="location[location_lat]"
-                  value={@location_lat}
-                  step="0.0001"
-                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="35.7721"
-                />
-              </div>
-              <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">Longitude</label>
-                <input
-                  type="number"
-                  name="location[location_lon]"
-                  value={@location_lon}
-                  step="0.0001"
-                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="-78.63861"
-                />
-              </div>
-            </div>
-            <div class="space-y-1">
-              <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                Radius (miles)
-              </label>
-              <input
-                type="number"
-                name="location[radius_mi]"
-                value={@radius_mi}
-                min="3"
-                max="300"
-                step="1"
-                class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="25"
-              />
-            </div>
-            <.save_button />
-          </.form>
-        </.settings_card>
-        
-    <!-- 2. Display Mode -->
+
+        <%!-- 1. Display Mode (always visible) --%>
         <.settings_card title="Display Mode" icon="🖥️">
           <div class="flex gap-4">
             <div
@@ -391,144 +366,198 @@ defmodule AeroVisionWeb.SettingsLive do
             </div>
           </div>
         </.settings_card>
-        
-    <!-- 3. Tracked Flights -->
-        <.settings_card title="Tracked Flights" icon="🎯">
-          <div class="space-y-3">
-            <p class="text-xs text-gray-500">
-              Add specific callsigns to track (e.g. DAL123, UAL456).
-            </p>
-            <form phx-submit="add_tracked_flight" class="flex gap-2">
-              <input
-                type="text"
-                name="callsign"
-                value=""
-                class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="DAL123"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="characters"
-                phx-debounce="200"
-              />
-              <button
-                type="submit"
-                class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
-              >
-                Add
-              </button>
-            </form>
-            <%= if @tracked_flights == [] do %>
-              <p class="text-sm text-gray-600 italic">No tracked flights. Add callsigns above.</p>
-            <% else %>
-              <div class="space-y-2">
-                <%= for callsign <- @tracked_flights do %>
-                  <div class="flex items-center justify-between px-3 py-2 bg-gray-800 rounded-md">
-                    <span class="font-mono text-sm text-white">{callsign}</span>
-                    <button
-                      phx-click="remove_tracked_flight"
-                      phx-value-callsign={callsign}
-                      class="text-gray-500 hover:text-red-400 transition-colors text-sm"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                <% end %>
+
+        <%!-- 2. Location (nearby mode only) --%>
+        <%= if @display_mode == :nearby do %>
+          <.settings_card title="Location" icon="📍">
+            <.form for={%{}} as={:location} phx-submit="save_location" class="space-y-4">
+              <div class="grid grid-cols-2 gap-4">
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">Latitude</label>
+                  <input
+                    type="number"
+                    name="location[location_lat]"
+                    value={@location_lat}
+                    step="0.0001"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="35.7721"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">Longitude</label>
+                  <input
+                    type="number"
+                    name="location[location_lon]"
+                    value={@location_lon}
+                    step="0.0001"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                    placeholder="-78.63861"
+                  />
+                </div>
               </div>
-            <% end %>
-          </div>
-        </.settings_card>
-        
-    <!-- 4. Airline Filters -->
-        <.settings_card title="Airline Filters" icon="✈️">
-          <div class="space-y-3">
-            <p class="text-xs text-gray-500">
-              Filter by ICAO airline prefix (e.g. AAL, UAL, DAL). Only these airlines will be shown.
-            </p>
-            <form phx-submit="add_airline_filter" class="flex gap-2">
-              <input
-                type="text"
-                name="prefix"
-                value=""
-                class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="AAL"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="characters"
-                phx-debounce="200"
-              />
-              <button
-                type="submit"
-                class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
-              >
-                Add
-              </button>
-            </form>
-            <%= if @airline_filters == [] do %>
-              <p class="text-sm text-gray-600 italic">No filters active — all airlines shown.</p>
-            <% else %>
-              <div class="flex flex-wrap gap-2">
-                <%= for prefix <- @airline_filters do %>
-                  <div class="flex items-center gap-1.5 px-2.5 py-1 bg-gray-800 rounded-full border border-gray-700">
-                    <span class="font-mono text-sm text-cyan-300">{prefix}</span>
-                    <button
-                      phx-click="remove_airline_filter"
-                      phx-value-prefix={prefix}
-                      class="text-gray-500 hover:text-red-400 transition-colors leading-none"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                <% end %>
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  Radius (miles)
+                </label>
+                <input
+                  type="number"
+                  name="location[radius_mi]"
+                  value={@radius_mi}
+                  min="3"
+                  max="300"
+                  step="1"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="25"
+                />
               </div>
-            <% end %>
-          </div>
-        </.settings_card>
-        
-    <!-- 5. Airport Filters -->
-        <.settings_card title="Airport Filters" icon="🛬">
-          <div class="space-y-3">
-            <p class="text-xs text-gray-500">
-              Show only flights departing or arriving at these airports. Accepts IATA (e.g. <span class="font-mono text-gray-400">RDU</span>) or ICAO codes (e.g. <span class="font-mono text-gray-400">KRDU</span>). Requires AeroAPI enrichment.
-            </p>
-            <form phx-submit="add_airport_filter" class="flex gap-2">
-              <input
-                type="text"
-                name="code"
-                value=""
-                class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="RDU"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="characters"
-                phx-debounce="200"
-              />
-              <button
-                type="submit"
-                class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
-              >
-                Add
-              </button>
-            </form>
-            <%= if @airport_filters == [] do %>
-              <p class="text-sm text-gray-600 italic">No filters active — all airports shown.</p>
-            <% else %>
-              <div class="flex flex-wrap gap-2">
-                <%= for code <- @airport_filters do %>
-                  <div class="flex items-center gap-1.5 px-2.5 py-1 bg-gray-800 rounded-full border border-gray-700">
-                    <span class="font-mono text-sm text-cyan-300">{code}</span>
-                    <button
-                      phx-click="remove_airport_filter"
-                      phx-value-code={code}
-                      class="text-gray-500 hover:text-red-400 transition-colors leading-none"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                <% end %>
-              </div>
-            <% end %>
-          </div>
-        </.settings_card>
+              <.save_button />
+            </.form>
+          </.settings_card>
+        <% end %>
+
+        <%!-- 3. Tracked Flights (tracked mode only) --%>
+        <%= if @display_mode == :tracked do %>
+          <.settings_card title="Tracked Flights" icon="🎯">
+            <div class="space-y-3">
+              <p class="text-xs text-gray-500">
+                Add specific callsigns to track (e.g. DAL123, UAL456).
+              </p>
+              <form phx-submit="add_tracked_flight" class="flex gap-2">
+                <input
+                  type="text"
+                  name="callsign"
+                  value=""
+                  class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="DAL123"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="characters"
+                  phx-debounce="200"
+                />
+                <button
+                  type="submit"
+                  class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
+                >
+                  Add
+                </button>
+              </form>
+              <%= if @tracked_flights == [] do %>
+                <p class="text-sm text-gray-600 italic">No tracked flights. Add callsigns above.</p>
+              <% else %>
+                <div class="space-y-2">
+                  <%= for callsign <- @tracked_flights do %>
+                    <div class="flex items-center justify-between px-3 py-2 bg-gray-800 rounded-md">
+                      <span class="font-mono text-sm text-white">{callsign}</span>
+                      <button
+                        phx-click="remove_tracked_flight"
+                        phx-value-callsign={callsign}
+                        class="text-gray-500 hover:text-red-400 transition-colors text-sm"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  <% end %>
+                </div>
+              <% end %>
+            </div>
+          </.settings_card>
+        <% end %>
+
+        <%!-- 4. Airline Filters (nearby mode only) --%>
+        <%= if @display_mode == :nearby do %>
+          <.settings_card title="Airline Filters" icon="✈️">
+            <div class="space-y-3">
+              <p class="text-xs text-gray-500">
+                Filter by ICAO airline prefix (e.g. AAL, UAL, DAL). Only these airlines will be shown.
+              </p>
+              <form phx-submit="add_airline_filter" class="flex gap-2">
+                <input
+                  type="text"
+                  name="prefix"
+                  value=""
+                  class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="AAL"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="characters"
+                  phx-debounce="200"
+                />
+                <button
+                  type="submit"
+                  class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
+                >
+                  Add
+                </button>
+              </form>
+              <%= if @airline_filters == [] do %>
+                <p class="text-sm text-gray-600 italic">No filters active — all airlines shown.</p>
+              <% else %>
+                <div class="flex flex-wrap gap-2">
+                  <%= for prefix <- @airline_filters do %>
+                    <div class="flex items-center gap-1.5 px-2.5 py-1 bg-gray-800 rounded-full border border-gray-700">
+                      <span class="font-mono text-sm text-cyan-300">{prefix}</span>
+                      <button
+                        phx-click="remove_airline_filter"
+                        phx-value-prefix={prefix}
+                        class="text-gray-500 hover:text-red-400 transition-colors leading-none"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  <% end %>
+                </div>
+              <% end %>
+            </div>
+          </.settings_card>
+        <% end %>
+
+        <%!-- 5. Airport Filters (nearby mode only) --%>
+        <%= if @display_mode == :nearby do %>
+          <.settings_card title="Airport Filters" icon="🛬">
+            <div class="space-y-3">
+              <p class="text-xs text-gray-500">
+                Show only flights departing or arriving at these airports. Accepts IATA (e.g. <span class="font-mono text-gray-400">RDU</span>) or ICAO codes (e.g. <span class="font-mono text-gray-400">KRDU</span>). Requires AeroAPI enrichment.
+              </p>
+              <form phx-submit="add_airport_filter" class="flex gap-2">
+                <input
+                  type="text"
+                  name="code"
+                  value=""
+                  class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="RDU"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="characters"
+                  phx-debounce="200"
+                />
+                <button
+                  type="submit"
+                  class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-medium rounded-md transition-colors"
+                >
+                  Add
+                </button>
+              </form>
+              <%= if @airport_filters == [] do %>
+                <p class="text-sm text-gray-600 italic">No filters active — all airports shown.</p>
+              <% else %>
+                <div class="flex flex-wrap gap-2">
+                  <%= for code <- @airport_filters do %>
+                    <div class="flex items-center gap-1.5 px-2.5 py-1 bg-gray-800 rounded-full border border-gray-700">
+                      <span class="font-mono text-sm text-cyan-300">{code}</span>
+                      <button
+                        phx-click="remove_airport_filter"
+                        phx-value-code={code}
+                        class="text-gray-500 hover:text-red-400 transition-colors leading-none"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  <% end %>
+                </div>
+              <% end %>
+            </div>
+          </.settings_card>
+        <% end %>
         
     <!-- 6. Display Settings -->
         <.settings_card title="Display Settings" icon="💡">
@@ -573,86 +602,166 @@ defmodule AeroVisionWeb.SettingsLive do
               />
               <p class="text-xs text-gray-600">How long each flight is displayed on the LED panel.</p>
             </div>
-            <.save_button />
-          </.form>
-        </.settings_card>
-        
-    <!-- 6. API Keys -->
-        <.settings_card title="API Keys" icon="🔑">
-          <.form for={%{}} as={:api_keys} phx-submit="save_api_keys" class="space-y-4">
-            <div class="space-y-1">
+            <div class="space-y-2">
               <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                OpenSky Client ID
+                Timezone
               </label>
               <input
                 type="text"
-                name="api_keys[opensky_client_id]"
-                value={@opensky_client_id}
+                name="display_settings[timezone]"
+                value={@timezone}
                 class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="your-client-id"
+                placeholder="America/New_York"
                 autocomplete="off"
               />
-            </div>
-            <div class="space-y-1">
-              <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                OpenSky Client Secret
-              </label>
-              <input
-                type="password"
-                name="api_keys[opensky_client_secret]"
-                value={@opensky_client_secret}
-                class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="••••••••"
-                autocomplete="new-password"
-              />
-            </div>
-            <div class="space-y-1">
-              <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                FlightAware AeroAPI Key
-              </label>
-              <input
-                type="password"
-                name="api_keys[aeroapi_key]"
-                value={@aeroapi_key}
-                class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="••••••••"
-                autocomplete="new-password"
-              />
+              <div class="flex flex-wrap gap-1.5 mt-2">
+                <button
+                  type="button"
+                  phx-click="set_timezone"
+                  phx-value-tz="America/New_York"
+                  class={[
+                    "px-2 py-1 text-xs rounded-md border transition-colors",
+                    @timezone == "America/New_York" && "border-cyan-500 bg-cyan-950 text-cyan-300",
+                    @timezone != "America/New_York" &&
+                      "border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600"
+                  ]}
+                >
+                  ET
+                </button>
+                <button
+                  type="button"
+                  phx-click="set_timezone"
+                  phx-value-tz="America/Chicago"
+                  class={[
+                    "px-2 py-1 text-xs rounded-md border transition-colors",
+                    @timezone == "America/Chicago" && "border-cyan-500 bg-cyan-950 text-cyan-300",
+                    @timezone != "America/Chicago" &&
+                      "border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600"
+                  ]}
+                >
+                  CT
+                </button>
+                <button
+                  type="button"
+                  phx-click="set_timezone"
+                  phx-value-tz="America/Denver"
+                  class={[
+                    "px-2 py-1 text-xs rounded-md border transition-colors",
+                    @timezone == "America/Denver" && "border-cyan-500 bg-cyan-950 text-cyan-300",
+                    @timezone != "America/Denver" &&
+                      "border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600"
+                  ]}
+                >
+                  MT
+                </button>
+                <button
+                  type="button"
+                  phx-click="set_timezone"
+                  phx-value-tz="America/Los_Angeles"
+                  class={[
+                    "px-2 py-1 text-xs rounded-md border transition-colors",
+                    @timezone == "America/Los_Angeles" &&
+                      "border-cyan-500 bg-cyan-950 text-cyan-300",
+                    @timezone != "America/Los_Angeles" &&
+                      "border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600"
+                  ]}
+                >
+                  PT
+                </button>
+                <button
+                  type="button"
+                  phx-click="set_timezone"
+                  phx-value-tz="Etc/UTC"
+                  class={[
+                    "px-2 py-1 text-xs rounded-md border transition-colors",
+                    @timezone == "Etc/UTC" && "border-cyan-500 bg-cyan-950 text-cyan-300",
+                    @timezone != "Etc/UTC" &&
+                      "border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600"
+                  ]}
+                >
+                  UTC
+                </button>
+              </div>
               <p class="text-xs text-gray-600">
-                Optional — enables route and airline info enrichment.
+                IANA timezone (e.g. America/New_York, Europe/London)
               </p>
             </div>
-            <%!-- AeroAPI monthly usage --%>
-            <%= if @aeroapi_key != "" do %>
-              <div class="pt-2 space-y-1.5">
-                <div class="flex items-center justify-between text-xs">
-                  <span class="text-gray-500">AeroAPI calls this month</span>
-                  <span class={[
-                    "font-mono font-medium",
-                    @aeroapi_usage < 800 && "text-emerald-400",
-                    (@aeroapi_usage >= 800 and @aeroapi_usage < 950) && "text-amber-400",
-                    @aeroapi_usage >= 950 && "text-red-400"
-                  ]}>
-                    {@aeroapi_usage} / ~1,000
-                  </span>
-                </div>
-                <div class="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                  <div
-                    class={[
-                      "h-full rounded-full transition-all duration-500",
-                      @aeroapi_usage < 800 && "bg-emerald-500",
-                      (@aeroapi_usage >= 800 and @aeroapi_usage < 950) && "bg-amber-500",
-                      @aeroapi_usage >= 950 && "bg-red-500"
-                    ]}
-                    style={"width: #{min(round(@aeroapi_usage / 10), 100)}%"}
-                  >
-                  </div>
-                </div>
-                <p class="text-xs text-gray-600">
-                  Free tier: ~1,000 calls/month ($0.005 each). Cache lasts 24h per flight.
-                </p>
+            <.save_button />
+          </.form>
+        </.settings_card>
+
+        <%!-- 6. API Keys --%>
+        <.settings_card title="API Keys" icon="🔑">
+          <.form for={%{}} as={:api_keys} phx-submit="save_api_keys" class="space-y-6">
+            <%!-- Skylink section --%>
+            <div class="space-y-1">
+              <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                Skylink API Key
+              </label>
+              <input
+                type="password"
+                name="api_keys[skylink_api_key]"
+                value={@skylink_api_key}
+                class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                placeholder="Your RapidAPI key"
+                autocomplete="off"
+              />
+              <p class="text-xs text-gray-600">
+                Tracked mode ADS-B + flight status enrichment.
+                <a
+                  href="https://rapidapi.com/skylink-api-skylink-api-default/api/skylink-api"
+                  target="_blank"
+                  class="text-cyan-500 hover:underline"
+                >
+                  Get key at RapidAPI
+                </a>
+              </p>
+            </div>
+
+            <%!-- Divider --%>
+            <div class="border-t border-gray-800" />
+
+            <%!-- OpenSky section --%>
+            <div class="space-y-3">
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  OpenSky Client ID
+                </label>
+                <input
+                  type="text"
+                  name="api_keys[opensky_client_id]"
+                  value={@opensky_client_id}
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="username"
+                  autocomplete="off"
+                />
               </div>
-            <% end %>
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  OpenSky Client Secret
+                </label>
+                <input
+                  type="password"
+                  name="api_keys[opensky_client_secret]"
+                  value={@opensky_client_secret}
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="••••••••"
+                  autocomplete="off"
+                />
+              </div>
+              <p class="text-xs text-gray-600">
+                Nearby mode ADS-B (30s updates). Falls back to Skylink if not configured.
+                Free at
+                <a
+                  href="https://opensky-network.org"
+                  target="_blank"
+                  class="text-cyan-500 hover:underline"
+                >
+                  opensky-network.org
+                </a>
+              </p>
+            </div>
+
             <.save_button />
           </.form>
         </.settings_card>
@@ -819,26 +928,43 @@ defmodule AeroVisionWeb.SettingsLive do
               <.info_row label="Uptime" value={@uptime} />
             </div>
 
-            <div class="pt-2 border-t border-gray-800 flex items-center gap-3 flex-wrap">
-              <button
-                phx-click="reboot"
-                data-confirm="Reboot the device?"
-                class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-200 text-sm font-medium rounded-md border border-red-700 transition-colors"
-              >
-                Reboot
-              </button>
-              <button
-                phx-click="shutdown"
-                data-confirm="Shut down the device? You will need to physically power cycle it to turn it back on."
-                class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-md border border-gray-700 transition-colors"
-              >
-                Shut Down
-              </button>
-              <p class="text-xs text-gray-600 w-full mt-1">
-                {if on_target?(),
-                  do: "Reboot restarts the Pi. Shut Down powers it off safely.",
-                  else: "System controls disabled in development mode."}
-              </p>
+            <div class="pt-2 border-t border-gray-800 space-y-4">
+              <div class="space-y-1">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  Flight Cache
+                </label>
+                <button
+                  phx-click="purge_cache"
+                  class="w-full px-3 py-2 bg-amber-900/50 border border-amber-700/50 rounded-md text-amber-300 text-sm hover:bg-amber-900/70 hover:border-amber-600/50 transition-colors"
+                >
+                  🗑️ Purge Flight Cache
+                </button>
+                <p class="text-xs text-gray-600">
+                  Clear all cached enrichment data and tracked flights. Data will repopulate on the next poll cycle.
+                </p>
+              </div>
+
+              <div class="flex items-center gap-3 flex-wrap">
+                <button
+                  phx-click="reboot"
+                  data-confirm="Reboot the device?"
+                  class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-200 text-sm font-medium rounded-md border border-red-700 transition-colors"
+                >
+                  Reboot
+                </button>
+                <button
+                  phx-click="shutdown"
+                  data-confirm="Shut down the device? You will need to physically power cycle it to turn it back on."
+                  class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-md border border-gray-700 transition-colors"
+                >
+                  Shut Down
+                </button>
+                <p class="text-xs text-gray-600 w-full mt-1">
+                  {if on_target?(),
+                    do: "Reboot restarts the Pi. Shut Down powers it off safely.",
+                    else: "System controls disabled in development mode."}
+                </p>
+              </div>
             </div>
           </div>
         </.settings_card>
