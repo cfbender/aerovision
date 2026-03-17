@@ -121,7 +121,7 @@ defmodule AeroVisionWeb.SettingsLive do
   end
 
   def handle_event("save_display_settings", %{"display_settings" => params}, socket) do
-    brightness = parse_int(params["display_brightness"])
+    brightness = params["display_brightness"] |> parse_int() |> clamp(20, 100)
     cycle = parse_int(params["display_cycle_seconds"])
     timezone = Map.get(params, "timezone", socket.assigns.timezone)
 
@@ -579,13 +579,13 @@ defmodule AeroVisionWeb.SettingsLive do
                 type="range"
                 name="display_settings[display_brightness]"
                 value={@display_brightness}
-                min="1"
+                min="20"
                 max="100"
                 step="1"
                 class="w-full accent-cyan-500"
               />
               <div class="flex justify-between text-xs text-gray-600">
-                <span>1%</span>
+                <span>20%</span>
                 <span>100%</span>
               </div>
             </div>
@@ -1038,6 +1038,9 @@ defmodule AeroVisionWeb.SettingsLive do
   end
 
   defp parse_int(_), do: nil
+
+  defp clamp(nil, _min, _max), do: nil
+  defp clamp(n, min_val, max_val), do: n |> max(min_val) |> min(max_val)
 
   defp on_target? do
     Application.get_env(:aerovision, :target, :host) != :host

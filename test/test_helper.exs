@@ -4,5 +4,9 @@ Mimic.copy(CubDB)
 Mimic.copy(AeroVision.Flight.Skylink.FlightStatus)
 Mimic.copy(AeroVision.Network.Manager)
 Mimic.copy(AeroVision.Display.Driver)
+Mimic.copy(AeroVision.Network.Watchdog)
 
 ExUnit.start()
+
+# Start the Phoenix endpoint for LiveView/controller tests.
+{:ok, _} = AeroVisionWeb.Endpoint.start_link()

@@ -164,7 +164,7 @@ defmodule AeroVision.MixProject do
     if File.exists?(src) do
       File.rm_rf!(dst)
       File.mkdir_p!(Path.dirname(dst))
-      File.cp_r!(src, dst)
+      File.cp_r!(src, dst, dereference_symlinks: true)
       Mix.shell().info("[:zoneinfo] Copied #{src} → #{dst}")
     else
       Mix.shell().error(

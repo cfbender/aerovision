@@ -131,6 +131,9 @@ defmodule AeroVision.Display.Renderer do
   def handle_info({:config_changed, :display_brightness, brightness}, state) do
     Logger.info("[Display.Renderer] Brightness updated to #{brightness}")
     Driver.send_command(%{cmd: "brightness", value: brightness})
+    # Force a re-render so the new brightness is visible immediately rather than
+    # waiting for the next natural cycle tick. Clear last_command to bypass dedup.
+    state = render(%{state | last_command: nil})
     {:noreply, state}
   end
 

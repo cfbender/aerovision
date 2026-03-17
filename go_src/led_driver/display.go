@@ -42,8 +42,9 @@ func (d *Display) stopAnim() {
 // HandleCommand dispatches an inbound Command to the appropriate renderer.
 func (d *Display) HandleCommand(cmd Command) {
 	// Stop any running animation before processing the next command,
-	// unless the next command is itself an animation.
-	if cmd.Cmd != "scan_anim" && cmd.Cmd != "ping" {
+	// unless the next command is itself an animation or a brightness-only update
+	// (brightness changes should not interrupt the scan animation).
+	if cmd.Cmd != "scan_anim" && cmd.Cmd != "ping" && cmd.Cmd != "brightness" {
 		d.stopAnim()
 	}
 

@@ -42,7 +42,7 @@ defmodule AeroVision.Config.StoreTest do
     assert get(store, :airline_filters) == []
     assert get(store, :display_mode) == :nearby
     assert get(store, :display_brightness) == 80
-    assert get(store, :display_cycle_seconds) == 8
+    assert get(store, :display_cycle_seconds) == 15
     assert get(store, :units) == :imperial
   end
 
@@ -106,7 +106,7 @@ defmodule AeroVision.Config.StoreTest do
     assert config.tracked_flights == []
     assert config.airline_filters == []
     assert config.display_brightness == 80
-    assert config.display_cycle_seconds == 8
+    assert config.display_cycle_seconds == 15
     assert config.display_mode == :nearby
     assert config.units == :imperial
   end

@@ -14,6 +14,7 @@ defmodule AeroVisionWeb.ConnCase do
 
       import Plug.Conn
       import Phoenix.ConnTest
+      import Phoenix.LiveViewTest
       import AeroVisionWeb.ConnCase
     end
   end

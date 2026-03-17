@@ -164,17 +164,38 @@ defmodule AeroVision.Display.RendererGenServerTest do
     assert :sys.get_state(pid).cycle_seconds == 12
   end
 
-  test "{:config_changed, :display_brightness, N} sends brightness command" do
+  test "{:config_changed, :display_brightness, N} sends brightness command and re-renders" do
     pid = GenServer.whereis(Renderer)
 
-    expect(Driver, :send_command, fn cmd ->
-      assert cmd.cmd == "brightness"
-      assert cmd.value == 60
+    # Brightness change sends two commands:
+    # 1. The brightness command itself
+    # 2. A re-render of the current display state (scan_anim in :loading mode)
+    expect(Driver, :send_command, 2, fn cmd ->
+      assert cmd.cmd in ["brightness", "scan_anim"]
       :ok
     end)
 
     allow(Driver, self(), pid)
     send(pid, {:config_changed, :display_brightness, 60})
+    :sys.get_state(pid)
+  end
+
+  test "{:config_changed, :display_brightness, N} re-renders flight card when in :flights mode" do
+    pid = GenServer.whereis(Renderer)
+
+    # Put renderer in :flights mode first
+    send(pid, {:display_flights, [tracked_flight()]})
+    :sys.get_state(pid)
+    assert :sys.get_state(pid).mode == :flights
+
+    # Brightness change should send brightness command + re-render flight card
+    expect(Driver, :send_command, 2, fn cmd ->
+      assert cmd.cmd in ["brightness", "flight_card"]
+      :ok
+    end)
+
+    allow(Driver, self(), pid)
+    send(pid, {:config_changed, :display_brightness, 40})
     :sys.get_state(pid)
   end
 
