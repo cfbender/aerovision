@@ -2,7 +2,7 @@
 
 A real-time flight tracking LED display built on a Raspberry Pi Zero 2 W. AeroVision polls live ADS-B data and renders a full flight information card — callsign, aircraft type, route, altitude, speed, heading, departure/arrival times, and a progress bar — on a 64×64 HUB75 LED matrix panel.
 
-<img width="1488" height="1374" alt="image" src="https://github.com/user-attachments/assets/01382963-573e-428d-83d1-d45acb1d65aa" />
+<img width="1384" height="1034" alt="image" src="https://github.com/user-attachments/assets/24cd3695-9aef-4742-a1a8-a5cf9a03d2e2" />
 <img width="1312" height="572" alt="image" src="https://github.com/user-attachments/assets/8809cf2d-f7eb-429a-8ebb-ec2d7b1a17fa" />
 
 
