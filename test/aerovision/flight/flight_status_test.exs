@@ -9,15 +9,18 @@ defmodule AeroVision.Flight.FlightStatusTest do
   alias AeroVision.Flight.Providers.FlightAware
   alias AeroVision.Flight.Providers.FlightStats
 
-  @cache_table :aerovision_skylink_cache
+  @cache_table :flight_cache_ets
 
   setup do
     Store.reset()
     Phoenix.PubSub.subscribe(AeroVision.PubSub, "flights")
-    tmp = Path.join(System.tmp_dir!(), "skylink_test_#{System.unique_integer([:positive])}")
+    tmp = Path.join(System.tmp_dir!(), "flight_cache_test_#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
     on_exit(fn -> File.rm_rf!(tmp) end)
-    start_supervised!({FlightStatus, data_dir: tmp})
+
+    start_supervised!({AeroVision.Cache, name: :flight_cache, data_dir: tmp, cache_version: 2, ets: true, ttl: 86_400})
+
+    start_supervised!(FlightStatus)
     :ok
   end
 

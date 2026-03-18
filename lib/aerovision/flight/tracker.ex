@@ -15,6 +15,7 @@ defmodule AeroVision.Flight.Tracker do
 
   use GenServer
 
+  alias AeroVision.Cache
   alias AeroVision.Config.Store
   alias AeroVision.Flight.FlightInfo
   alias AeroVision.Flight.FlightStatus
@@ -31,13 +32,10 @@ defmodule AeroVision.Flight.Tracker do
 
   @cleanup_interval_ms 30_000
   @stale_threshold_sec 120
+  @cache :tracker_cache
   @cache_key :last_flights
   # Must match the same constant in Renderer — no flight shorter than this is valid
   @min_flight_duration_sec 15 * 60
-  # Bump whenever TrackedFlight or FlightInfo struct fields change so stale
-  # serialized structs (missing new fields) don't crash on access after a deploy.
-  @cache_version 2
-
   @max_display_flights 3
   # @max_display_flights + 2 buffer — only the closest N flights are enriched in nearby mode
   @enrich_candidates 5
@@ -71,68 +69,26 @@ defmodule AeroVision.Flight.Tracker do
   # ───────────────────────────────────────────────────────────── callbacks ──
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     Phoenix.PubSub.subscribe(@pubsub, @flights_topic)
     Phoenix.PubSub.subscribe(@pubsub, @config_topic)
 
-    data_dir =
-      Keyword.get(opts, :data_dir) ||
-        case Application.get_env(:aerovision, :target, :host) do
-          target when target in [:host, :test] ->
-            Path.join(System.user_home!(), ".aerovision/tracker_cache")
-
-          _ ->
-            "/data/aerovision/tracker_cache"
-        end
-
-    File.mkdir_p!(data_dir)
-
-    # Use a named CubDB only when no custom data_dir was provided (i.e. normal
-    # startup). In tests, each test passes its own data_dir and we must NOT
-    # share the named table or subsequent start_supervised! calls would get the
-    # old process back via :already_started.
-    db_base_opts =
-      if Keyword.has_key?(opts, :data_dir) do
-        [data_dir: data_dir]
-      else
-        [data_dir: data_dir, name: :aerovision_tracker_cache]
-      end
-
-    db =
-      AeroVision.DB.open(
-        db_base_opts ++
-          [
-            # Compact aggressively — we write one key repeatedly every 15s,
-            # so the append-only file accumulates dirt quickly.
-            auto_compact: {10, 0.3}
-          ]
-      )
-
-    # Check cache version — clear flights if the TrackedFlight/FlightInfo struct
-    # layout has changed since the last deploy. Accessing missing fields on a
-    # stale deserialized struct raises KeyError and crashes the GenServer.
-    stored_version = CubDB.get(db, :cache_version, 0)
-
+    # Restore cached flights from persistent cache
     cached_flights =
-      if stored_version < @cache_version do
-        Logger.info("[Tracker] Cache version #{stored_version} < #{@cache_version} — clearing stale flight data")
+      case Cache.get(@cache, @cache_key) do
+        {flights, _cached_at} when is_map(flights) ->
+          if map_size(flights) > 0 do
+            Logger.info("[Tracker] Restored #{map_size(flights)} flight(s) from cache")
+          end
 
-        CubDB.put(db, :cache_version, @cache_version)
-        CubDB.delete(db, @cache_key)
-        %{}
-      else
-        flights = CubDB.get(db, @cache_key, %{})
+          flights
 
-        if map_size(flights) > 0 do
-          Logger.info("[Tracker] Restored #{map_size(flights)} flight(s) from cache")
-        end
-
-        flights
+        _ ->
+          %{}
       end
 
     state = %{
       flights: cached_flights,
-      db: db,
       mode: Store.get(:display_mode),
       tracked_flights: Store.get(:tracked_flights),
       airline_filters: Store.get(:airline_filters),
@@ -178,7 +134,7 @@ defmodule AeroVision.Flight.Tracker do
   def handle_cast(:clear_flights, state) do
     Logger.info("[Tracker] All flights cleared by user request")
     new_state = %{state | flights: %{}}
-    CubDB.put(new_state.db, @cache_key, %{})
+    Cache.put(@cache, @cache_key, %{})
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -233,7 +189,7 @@ defmodule AeroVision.Flight.Tracker do
       end
 
     new_state = %{state | flights: new_flights}
-    CubDB.put(new_state.db, @cache_key, new_flights)
+    Cache.put(@cache, @cache_key, new_flights)
     enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
@@ -259,7 +215,7 @@ defmodule AeroVision.Flight.Tracker do
 
           new_flights = Map.put(state.flights, callsign, tracked)
           new_state = %{state | flights: new_flights}
-          CubDB.put(new_state.db, @cache_key, new_flights)
+          Cache.put(@cache, @cache_key, new_flights)
           broadcast_display(new_state)
           {:noreply, new_state}
         else
@@ -273,7 +229,7 @@ defmodule AeroVision.Flight.Tracker do
         updated = %{tracked | flight_info: enriched_info}
         new_flights = Map.put(state.flights, callsign, updated)
         new_state = %{state | flights: new_flights}
-        CubDB.put(new_state.db, @cache_key, new_state.flights)
+        Cache.put(@cache, @cache_key, new_state.flights)
         broadcast_display(new_state)
         {:noreply, new_state}
     end
@@ -293,7 +249,7 @@ defmodule AeroVision.Flight.Tracker do
           location_lon: Store.get(:location_lon)
       }
 
-      CubDB.put(new_state.db, @cache_key, %{})
+      Cache.put(@cache, @cache_key, %{})
       broadcast_display(new_state)
       {:noreply, new_state}
     else
@@ -327,7 +283,7 @@ defmodule AeroVision.Flight.Tracker do
         updated = %{new_state | flights: new_flights}
         # Persist immediately so synthetic entries survive a Tracker restart
         # before the next ADS-B poll cycle writes the cache.
-        CubDB.put(updated.db, @cache_key, new_flights)
+        Cache.put(@cache, @cache_key, new_flights)
         updated
       else
         new_state
@@ -342,7 +298,7 @@ defmodule AeroVision.Flight.Tracker do
   def handle_info({:config_changed, :airline_filters, value}, state) do
     new_state = merge_cached_enrichment(%{state | airline_filters: value})
 
-    CubDB.put(new_state.db, @cache_key, new_state.flights)
+    Cache.put(@cache, @cache_key, new_state.flights)
     enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
@@ -355,7 +311,7 @@ defmodule AeroVision.Flight.Tracker do
     # next Skylink tick.
     new_state = merge_cached_enrichment(%{state | airport_filters: value})
 
-    CubDB.put(new_state.db, @cache_key, new_state.flights)
+    Cache.put(@cache, @cache_key, new_state.flights)
     enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
@@ -388,7 +344,7 @@ defmodule AeroVision.Flight.Tracker do
     new_state = %{state | flights: active_flights, cleanup_timer: cleanup_timer}
 
     if map_size(new_state.flights) != map_size(state.flights) do
-      CubDB.put(new_state.db, @cache_key, new_state.flights)
+      Cache.put(@cache, @cache_key, new_state.flights)
       broadcast_display(new_state)
     end
 

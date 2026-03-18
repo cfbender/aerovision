@@ -9,6 +9,7 @@ Mimic.copy(AeroVision.Network.Manager)
 Mimic.copy(AeroVision.Display.Driver)
 Mimic.copy(AeroVision.Network.Watchdog)
 Mimic.copy(AeroVision.Flight.Tracker)
+Mimic.copy(AeroVision.Cache)
 
 ExUnit.start()
 

@@ -89,32 +89,36 @@ defmodule AeroVision.Flight.TrackerTest do
   setup do
     Store.reset()
 
-    # Give the Tracker its own temp dir so it uses a real (but isolated) CubDB.
-    # This avoids global CubDB stubs that would contend with Config.Store's
-    # CubDB calls in other concurrently-running test files.
-    tmp_dir = Path.join(System.tmp_dir!(), "tracker_test_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(tmp_dir)
-    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+    # Create isolated temp dirs for both caches
+    flight_tmp = Path.join(System.tmp_dir!(), "flight_cache_tracker_test_#{System.unique_integer([:positive])}")
+    tracker_tmp = Path.join(System.tmp_dir!(), "tracker_cache_test_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(flight_tmp)
+    File.mkdir_p!(tracker_tmp)
+
+    on_exit(fn ->
+      File.rm_rf!(flight_tmp)
+      File.rm_rf!(tracker_tmp)
+    end)
+
+    # Start flight_cache (needed by FlightStatus.get_cached/1 called from Tracker)
+    start_supervised!(
+      {AeroVision.Cache, name: :flight_cache, data_dir: flight_tmp, cache_version: 2, ets: true, ttl: 86_400},
+      id: :flight_cache
+    )
+
+    # Start tracker_cache
+    start_supervised!(
+      {AeroVision.Cache,
+       name: :tracker_cache, data_dir: tracker_tmp, cache_version: 2, cubdb_opts: [auto_compact: {10, 0.3}]},
+      id: :tracker_cache
+    )
 
     # Stub FlightStatus functions (private to this test process) so no HTTP happens.
-    # Tests inject enrichment results directly via broadcast_enriched/2.
     stub(FlightStatus, :enrich, fn _callsign -> :ok end)
     stub(FlightStatus, :needs_refresh?, fn _callsign -> false end)
     stub(FlightStatus, :re_enrich, fn _callsign -> :ok end)
 
-    # Ensure the ETS cache table exists for FlightStatus.get_cached/1.
-    cache_table = :aerovision_skylink_cache
-
-    case :ets.whereis(cache_table) do
-      :undefined ->
-        :ets.new(cache_table, [:named_table, :public, :set, read_concurrency: true])
-
-      _ ->
-        :ets.delete_all_objects(cache_table)
-    end
-
-    # Extend the FlightStatus stubs to the Tracker process after it starts.
-    start_supervised!({Tracker, data_dir: tmp_dir})
+    start_supervised!(Tracker)
     tracker_pid = GenServer.whereis(Tracker)
     allow(FlightStatus, self(), tracker_pid)
 
