@@ -43,6 +43,8 @@ A web-based configuration UI (Phoenix LiveView) is served directly from the devi
 
 > **Panel selection tip**: Look for panels described as "64×64 P3 indoor HUB75" or "64×64 P2.5 indoor HUB75". The "P3" or "P2.5" refers to the pixel pitch (3mm or 2.5mm between LEDs). Avoid outdoor panels — they are much brighter and draw more power. Common sources: AliExpress, Adafruit, Amazon.
 
+The provided 3D printed enclosure was only tested on the Waveshare 64x64 P3 pitch LED panel.
+
 ---
 
 ## Wiring
@@ -504,6 +506,7 @@ The Pi Zero 2 W (BCM2710A1) toggles GPIO faster than some panels' shift register
 - Try increasing `slowdown_gpio` to 3 or 4 in `config/rpi0_2.exs` and rebuilding
 - Reduce `limit_refresh_hz` to 80 or 60 for more consistent timing under load
 - Verify the power supply is adequate — voltage sag under load causes display instability
+- Otherwise, this is a known issue effectively. The real fix would be running the led driver on it's own Pi, and send commands some other way. The resource constraints here cause some slight flickering especially in the dithered sections, regardless of optimizations.
 
 ### No flights appearing on the display
 1. Verify at least one ADS-B source is configured in **Settings → API Keys**
