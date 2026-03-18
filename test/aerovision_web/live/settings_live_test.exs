@@ -4,14 +4,12 @@ defmodule AeroVisionWeb.SettingsLiveTest do
 
   alias AeroVision.Config.Store
   alias AeroVision.Network.Manager, as: NetManager
-  alias AeroVision.Network.Watchdog
 
   setup do
     Store.reset()
 
     stub(NetManager, :current_mode, fn -> :infrastructure end)
     stub(NetManager, :current_ip, fn -> "192.168.1.42" end)
-    stub(Watchdog, :ping, fn -> :ok end)
 
     :ok
   end

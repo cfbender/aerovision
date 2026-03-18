@@ -17,8 +17,6 @@ defmodule AeroVisionWeb.DashboardLive do
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
       # Ask Tracker to re-broadcast current state so we don't wait for the next poll
       Tracker.broadcast_now()
-      # Disarm the network watchdog — a client has successfully reached the UI
-      AeroVision.Network.Watchdog.ping()
     end
 
     config = Store.all()

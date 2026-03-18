@@ -10,7 +10,6 @@ defmodule AeroVisionWeb.LogsLive do
 
     if on_device? and connected?(socket) do
       apply(RingLogger.Server, :attach_client, [self()])
-      AeroVision.Network.Watchdog.ping()
     end
 
     min_level = :info

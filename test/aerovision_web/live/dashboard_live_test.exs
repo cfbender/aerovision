@@ -10,7 +10,6 @@ defmodule AeroVisionWeb.DashboardLiveTest do
   alias AeroVision.Flight.TrackedFlight
   alias AeroVision.Flight.Tracker
   alias AeroVision.Network.Manager, as: NetManager
-  alias AeroVision.Network.Watchdog
 
   # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -123,7 +122,6 @@ defmodule AeroVisionWeb.DashboardLiveTest do
 
     stub(NetManager, :current_mode, fn -> :infrastructure end)
     stub(NetManager, :current_ip, fn -> "192.168.1.42" end)
-    stub(Watchdog, :ping, fn -> :ok end)
     stub(Tracker, :get_flights, fn -> [] end)
     stub(Tracker, :broadcast_now, fn -> :ok end)
     stub(FlightStatus, :re_enrich, fn _callsign -> :ok end)

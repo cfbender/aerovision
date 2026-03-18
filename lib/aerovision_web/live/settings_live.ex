@@ -11,8 +11,6 @@ defmodule AeroVisionWeb.SettingsLive do
       Store.subscribe()
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
-      # Disarm the network watchdog — a client has successfully reached the UI
-      AeroVision.Network.Watchdog.ping()
     end
 
     config = Store.all()

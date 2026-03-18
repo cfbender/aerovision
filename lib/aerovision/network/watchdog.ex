@@ -2,11 +2,11 @@ defmodule AeroVision.Network.Watchdog do
   @moduledoc """
   Network accessibility watchdog.
 
-  Starts a countdown timer on boot. If no LiveView client connects within
+  Starts a countdown timer on boot. If internet is not accessible within
   the timeout window, forces AP mode so the device is always recoverable
   via the "AeroVision-Setup" WiFi network.
 
-  Once a client connects, the watchdog disarms permanently for this boot
+  Once a connection succeeds, the watchdog disarms permanently for this boot
   cycle. It only runs on target hardware — on host/test it starts in
   disarmed mode.
   """
@@ -16,46 +16,64 @@ defmodule AeroVision.Network.Watchdog do
   require Logger
 
   @timeout_ms to_timeout(minute: 5)
+  @ping_interval_ms to_timeout(second: 30)
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Signal that a client has connected (call from LiveView mount)."
-  def ping do
-    GenServer.cast(__MODULE__, :ping)
-  end
-
   @impl true
   def init(_opts) do
     if on_target?() do
-      Logger.info("[Watchdog] Armed — will force AP mode in #{div(@timeout_ms, 60_000)} minutes if no client connects")
+      Logger.info(
+        "[Watchdog] Armed — will force AP mode in #{div(@timeout_ms, 60_000)} minutes if no connection succeeds"
+      )
 
-      timer = Process.send_after(self(), :timeout, @timeout_ms)
-      {:ok, %{timer: timer, armed: true}}
+      ping_timer = Process.send_after(self(), :ping, @ping_interval_ms)
+      timeout_timer = Process.send_after(self(), :timeout, @timeout_ms)
+      {:ok, %{timeout_timer: timeout_timer, ping_timer: ping_timer, armed: true}}
     else
-      {:ok, %{timer: nil, armed: false}}
+      {:ok, %{timeout_timer: nil, ping_timer: nil, armed: false}}
     end
   end
 
   @impl true
-  def handle_cast(:ping, %{armed: true, timer: timer} = state) do
-    Logger.info("[Watchdog] Client connected — disarming")
-    if timer, do: Process.cancel_timer(timer)
-    {:noreply, %{state | timer: nil, armed: false}}
+  def handle_cast(:disarm, %{armed: true} = state) do
+    Logger.info("[Watchdog] Disarming")
+    if state.timeout_timer, do: Process.cancel_timer(state.timeout_timer)
+    if state.ping_timer, do: Process.cancel_timer(state.ping_timer)
+    {:noreply, %{state | timeout_timer: nil, ping_timer: nil, armed: false}}
   end
 
-  def handle_cast(:ping, state) do
+  def handle_cast(:disarm, state) do
     # Already disarmed
     {:noreply, state}
   end
 
+  def handle_cast(:ping, %{armed: false} = state), do: {:noreply, state}
+
+  def handle_cast(:ping, state) do
+    Task.start(fn ->
+      if internet_reachable?() do
+        GenServer.cast(__MODULE__, :disarm)
+      else
+        Logger.warning("[Watchdog] Ping failed — still waiting for connection")
+        Process.send_after(__MODULE__, :ping, @ping_interval_ms)
+      end
+    end)
+
+    {:noreply, state}
+  end
+
   @impl true
+  def handle_info(:ping, state), do: handle_cast(:ping, state)
+
   def handle_info(:timeout, %{armed: true} = state) do
-    Logger.warning("[Watchdog] No client connected within timeout — forcing AP mode for recovery")
+    Logger.warning("[Watchdog] No connection succeeded within timeout — forcing AP mode for recovery")
+    if state.ping_timer, do: Process.cancel_timer(state.ping_timer)
 
     AeroVision.Network.Manager.force_ap_mode()
-    {:noreply, %{state | timer: nil, armed: false}}
+    {:noreply, %{state | timeout_timer: nil, ping_timer: nil, armed: false}}
   end
 
   def handle_info(:timeout, state) do
@@ -65,6 +83,11 @@ defmodule AeroVision.Network.Watchdog do
 
   def handle_info(_msg, state) do
     {:noreply, state}
+  end
+
+  defp internet_reachable? do
+    urls = ["https://www.google.com", "https://hex.pm"]
+    Enum.any?(urls, fn url -> match?({:ok, %{status: 200}}, Req.get(url, recv_timeout: 5_000)) end)
   end
 
   defp on_target? do
