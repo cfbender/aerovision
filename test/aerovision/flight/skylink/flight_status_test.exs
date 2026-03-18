@@ -54,9 +54,11 @@ defmodule AeroVision.Flight.Skylink.FlightStatusTest do
   end
 
   @tag :capture_log
-  test "enrich/1 with no API key configured — no broadcast within 1500ms" do
+  test "enrich/1 with no Skylink key — FlightStats enrichment still broadcasts" do
+    # FlightStats is the default enrichment source and requires no API key,
+    # so a broadcast should arrive even when no Skylink key is configured.
     FlightStatus.enrich("DAL1192")
-    refute_receive {:flight_enriched, "DAL1192", _}, 1500
+    assert_receive {:flight_enriched, "DAL1192", _}, 5000
   end
 
   test "unknown messages are ignored without crash" do
@@ -87,7 +89,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatusTest do
   end
 
   test "clear_cache/0 also clears the processing queue" do
-    # Enqueue something (won't process because no API key)
+    # Enqueue something
     FlightStatus.enrich("QUEUED123")
     _ = :sys.get_state(FlightStatus)
 

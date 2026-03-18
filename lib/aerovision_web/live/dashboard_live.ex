@@ -115,6 +115,8 @@ defmodule AeroVisionWeb.DashboardLive do
       if(opensky_secret == "", do: nil, else: opensky_secret)
     )
 
+    AeroVision.Config.Store.put(:api_keys_seen, true)
+
     config = AeroVision.Config.Store.all()
     {:noreply, assign(socket, setup_step: compute_setup_step(config))}
   end
@@ -197,6 +199,10 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   def handle_event("skip_step", _params, socket) do
+    if socket.assigns.setup_step == :api_keys do
+      AeroVision.Config.Store.put(:api_keys_seen, true)
+    end
+
     next_step =
       case socket.assigns.setup_step do
         :wifi -> :api_keys
@@ -475,37 +481,21 @@ defmodule AeroVisionWeb.DashboardLive do
               <span class="text-2xl">🔑</span>
               <div>
                 <h2 class="text-lg font-semibold text-white">API Keys</h2>
-                <p class="text-xs text-gray-500">Configure at least one ADS-B source.</p>
+                <p class="text-xs text-gray-500">Configure your data sources. Both are optional.</p>
               </div>
             </div>
             <.form for={%{}} as={:api_keys} phx-submit="setup_api_keys" class="space-y-4">
-              <%!-- Skylink section --%>
-              <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                  Skylink API Key
-                </label>
-                <input
-                  type="password"
-                  name="api_keys[skylink_api_key]"
-                  value=""
-                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                  placeholder="••••••••"
-                  autocomplete="new-password"
-                />
-                <p class="text-xs text-gray-600">
-                  Tracked mode ADS-B + flight status enrichment.
-                </p>
-              </div>
-
-              <%!-- Divider --%>
-              <div class="border-t border-gray-800" />
-
-              <%!-- OpenSky section --%>
+              <%!-- OpenSky section (primary ADS-B source) --%>
               <div class="space-y-3">
                 <div class="space-y-1">
-                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                    OpenSky Client ID
-                  </label>
+                  <div class="flex items-center gap-2">
+                    <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                      OpenSky Client ID
+                    </label>
+                    <span class="text-[10px] text-gray-600 border border-gray-700 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                      Optional
+                    </span>
+                  </div>
                   <input
                     type="text"
                     name="api_keys[opensky_client_id]"
@@ -516,26 +506,64 @@ defmodule AeroVisionWeb.DashboardLive do
                   />
                 </div>
                 <div class="space-y-1">
-                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                    OpenSky Client Secret
-                  </label>
+                  <div class="flex items-center gap-2">
+                    <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                      OpenSky Client Secret
+                    </label>
+                    <span class="text-[10px] text-gray-600 border border-gray-700 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                      Optional
+                    </span>
+                  </div>
                   <input
                     type="password"
                     name="api_keys[opensky_client_secret]"
                     value=""
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                     placeholder="••••••••"
-                    autocomplete="new-password"
+                    autocomplete="off"
                   />
                 </div>
                 <p class="text-xs text-gray-600">
-                  Nearby mode ADS-B (30s updates). Free at
+                  Primary ADS-B source for nearby mode. Free at
                   <a
                     href="https://opensky-network.org"
                     target="_blank"
                     class="text-cyan-500 hover:underline"
                   >
                     opensky-network.org
+                  </a>
+                </p>
+              </div>
+
+              <%!-- Divider --%>
+              <div class="border-t border-gray-800" />
+
+              <%!-- Skylink section (fallback) --%>
+              <div class="space-y-1">
+                <div class="flex items-center gap-2">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                    Skylink API Key
+                  </label>
+                  <span class="text-[10px] text-gray-600 border border-gray-700 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                    Optional
+                  </span>
+                </div>
+                <input
+                  type="password"
+                  name="api_keys[skylink_api_key]"
+                  value=""
+                  class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  placeholder="Your RapidAPI key"
+                  autocomplete="off"
+                />
+                <p class="text-xs text-gray-600">
+                  Fallback ADS-B + enrichment source. Flight data is provided by FlightStats by default.
+                  <a
+                    href="https://rapidapi.com/skylink-api-skylink-api-default/api/skylink-api"
+                    target="_blank"
+                    class="text-cyan-500 hover:underline"
+                  >
+                    Get key at RapidAPI
                   </a>
                 </p>
               </div>
@@ -757,23 +785,13 @@ defmodule AeroVisionWeb.DashboardLive do
     if @on_target do
       cond do
         is_nil(config.wifi_ssid) or config.wifi_ssid == "" -> :wifi
-        not has_adsb_source?(config) -> :api_keys
+        not config.api_keys_seen -> :api_keys
         config.location_lat == 35.7721 and config.location_lon == -78.63861 -> :location
         true -> :done
       end
     else
       :done
     end
-  end
-
-  defp has_adsb_source?(config) do
-    skylink_ok = is_binary(config.skylink_api_key) and config.skylink_api_key != ""
-
-    opensky_ok =
-      is_binary(config.opensky_client_id) and config.opensky_client_id != "" and
-        is_binary(config.opensky_client_secret) and config.opensky_client_secret != ""
-
-    skylink_ok or opensky_ok
   end
 
   defp parse_float(s) when is_binary(s) do

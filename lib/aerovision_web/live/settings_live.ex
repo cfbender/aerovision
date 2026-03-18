@@ -695,40 +695,17 @@ defmodule AeroVisionWeb.SettingsLive do
         <%!-- 6. API Keys --%>
         <.settings_card title="API Keys" icon="🔑">
           <.form for={%{}} as={:api_keys} phx-submit="save_api_keys" class="space-y-6">
-            <%!-- Skylink section --%>
-            <div class="space-y-1">
-              <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                Skylink API Key
-              </label>
-              <input
-                type="password"
-                name="api_keys[skylink_api_key]"
-                value={@skylink_api_key}
-                class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                placeholder="Your RapidAPI key"
-                autocomplete="off"
-              />
-              <p class="text-xs text-gray-600">
-                Tracked mode ADS-B + flight status enrichment.
-                <a
-                  href="https://rapidapi.com/skylink-api-skylink-api-default/api/skylink-api"
-                  target="_blank"
-                  class="text-cyan-500 hover:underline"
-                >
-                  Get key at RapidAPI
-                </a>
-              </p>
-            </div>
-
-            <%!-- Divider --%>
-            <div class="border-t border-gray-800" />
-
-            <%!-- OpenSky section --%>
+            <%!-- OpenSky section (primary ADS-B source) --%>
             <div class="space-y-3">
               <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                  OpenSky Client ID
-                </label>
+                <div class="flex items-center gap-2">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                    OpenSky Client ID
+                  </label>
+                  <span class="text-[10px] text-gray-600 border border-gray-700 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                    Optional
+                  </span>
+                </div>
                 <input
                   type="text"
                   name="api_keys[opensky_client_id]"
@@ -739,9 +716,14 @@ defmodule AeroVisionWeb.SettingsLive do
                 />
               </div>
               <div class="space-y-1">
-                <label class="block text-xs text-gray-400 uppercase tracking-wide">
-                  OpenSky Client Secret
-                </label>
+                <div class="flex items-center gap-2">
+                  <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                    OpenSky Client Secret
+                  </label>
+                  <span class="text-[10px] text-gray-600 border border-gray-700 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                    Optional
+                  </span>
+                </div>
                 <input
                   type="password"
                   name="api_keys[opensky_client_secret]"
@@ -752,8 +734,7 @@ defmodule AeroVisionWeb.SettingsLive do
                 />
               </div>
               <p class="text-xs text-gray-600">
-                Nearby mode ADS-B (30s updates). Falls back to Skylink if not configured.
-                Free at
+                Primary ADS-B source for nearby mode. Free at
                 <a
                   href="https://opensky-network.org"
                   target="_blank"
@@ -764,7 +745,46 @@ defmodule AeroVisionWeb.SettingsLive do
               </p>
             </div>
 
-            <.save_button />
+            <%!-- Divider --%>
+            <div class="border-t border-gray-800" />
+
+            <%!-- Skylink section (fallback) --%>
+            <div class="space-y-1">
+              <div class="flex items-center gap-2">
+                <label class="block text-xs text-gray-400 uppercase tracking-wide">
+                  Skylink API Key
+                </label>
+                <span class="text-[10px] text-gray-600 border border-gray-700 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                  Optional
+                </span>
+              </div>
+              <input
+                type="password"
+                name="api_keys[skylink_api_key]"
+                value={@skylink_api_key}
+                class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                placeholder="Your RapidAPI key"
+                autocomplete="off"
+              />
+              <p class="text-xs text-gray-600">
+                Fallback ADS-B + enrichment source. Flight data is provided by FlightStats by default.
+                <a
+                  href="https://rapidapi.com/skylink-api-skylink-api-default/api/skylink-api"
+                  target="_blank"
+                  class="text-cyan-500 hover:underline"
+                >
+                  Get key at RapidAPI
+                </a>
+              </p>
+            </div>
+
+            <button
+              type="submit"
+              id="save-api-keys"
+              class="w-full px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-semibold rounded-md transition-colors"
+            >
+              Save Changes
+            </button>
           </.form>
         </.settings_card>
 

@@ -35,7 +35,8 @@ defmodule AeroVision.Config.Store do
     timezone: "America/New_York",
     skylink_api_key: nil,
     opensky_client_id: nil,
-    opensky_client_secret: nil
+    opensky_client_secret: nil,
+    api_keys_seen: false
   }
 
   # Keys whose values are atoms (need string→atom conversion on read)

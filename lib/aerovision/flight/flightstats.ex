@@ -99,21 +99,13 @@ defmodule AeroVision.Flight.FlightStats do
   defp extract_flight_data(html) do
     with {:ok, document} <- Floki.parse_document(html),
          {:ok, json_str} <- find_next_data_script(document),
-         {{:ok, data}, _} <- {Jason.decode(json_str), json_str},
+         {:ok, data} <- Jason.decode(json_str),
          flight when not is_nil(flight) <-
            get_in(data, ["props", "initialState", "flightTracker", "flight"]) do
       {:ok, flight}
     else
       nil ->
         {:error, :no_flight_data}
-
-      {{:error, %Jason.DecodeError{}}, json_str} ->
-        IO.inspect(json_str,
-          label: "Failed to decode JSON from __NEXT_DATA__",
-          printable_limit: :infinity
-        )
-
-        {:error, :truncated_response}
 
       {:error, _} = error ->
         error
