@@ -207,9 +207,9 @@ defmodule AeroVision.Flight.OpenSky do
   end
 
   # In tracked fallback mode, filter down to just the tracked callsigns.
-  defp filter_by_callsign(:nearby, vectors), do: vectors
+  defp filter_by_callsign(vectors, :nearby), do: vectors
 
-  defp filter_by_callsign(_tracked, vectors) do
+  defp filter_by_callsign(vectors, _tracked) do
     tracked = Store.get(:tracked_flights)
 
     if tracked == [] do

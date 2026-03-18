@@ -32,6 +32,8 @@ defmodule AeroVision.Flight.StateVector do
     :squawk,
     # integer - 0=ADS-B, 1=ASTERIX, 2=MLAT, 3=FLARM
     :position_source,
+    # integer | nil - aircraft category (0-20, see OpenSky docs)
+    :category,
     # String | nil - aircraft type name from ADS-B (e.g., "Boeing 777-36N")
     :aircraft_type_name,
     # String | nil - aircraft registration / tail number (e.g., "N123DL")
@@ -58,6 +60,7 @@ defmodule AeroVision.Flight.StateVector do
       geo_altitude: nil,
       squawk: nil,
       position_source: nil,
+      category: nil,
       aircraft_type_name: data["aircraft_type"],
       registration: data["registration"]
     }
@@ -90,6 +93,7 @@ defmodule AeroVision.Flight.StateVector do
       geo_altitude: Enum.at(arr, 13),
       squawk: Enum.at(arr, 14),
       position_source: Enum.at(arr, 16),
+      category: Enum.at(arr, 17),
       aircraft_type_name: nil,
       registration: nil
     }

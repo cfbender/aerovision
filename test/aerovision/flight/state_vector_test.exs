@@ -197,7 +197,7 @@ defmodule AeroVision.Flight.StateVectorTest do
 
   # ──────────────────────────────────────────── from_opensky/1 ──
 
-  # A well-formed 17-element OpenSky array (indices 0–16)
+  # A well-formed 18-element OpenSky array (indices 0–17)
   defp valid_opensky_arr do
     [
       # 0: icao24
@@ -233,7 +233,9 @@ defmodule AeroVision.Flight.StateVectorTest do
       # 15: spi
       false,
       # 16: position_source
-      0
+      0,
+      # 17: category
+      2
     ]
   end
 
@@ -315,6 +317,18 @@ defmodule AeroVision.Flight.StateVectorTest do
     test "maps position_source correctly" do
       sv = StateVector.from_opensky(valid_opensky_arr())
       assert sv.position_source == 0
+    end
+
+    test "maps category correctly" do
+      sv = StateVector.from_opensky(valid_opensky_arr())
+      assert sv.category == 2
+    end
+
+    test "category is nil when not present in 17-element array" do
+      # 17-element array (no category) should still parse fine
+      arr = Enum.take(valid_opensky_arr(), 17)
+      sv = StateVector.from_opensky(arr)
+      assert sv.category == nil
     end
   end
 
