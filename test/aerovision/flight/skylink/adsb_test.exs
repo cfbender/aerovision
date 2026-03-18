@@ -1,12 +1,5 @@
 defmodule AeroVision.Flight.Skylink.ADSBTest do
-  use ExUnit.Case, async: false
-
-  alias AeroVision.Config.Store
-
-  setup do
-    Store.reset()
-    :ok
-  end
+  use ExUnit.Case, async: true
 
   test "module exists and can be started" do
     # Just verify the module compiles and the GenServer starts

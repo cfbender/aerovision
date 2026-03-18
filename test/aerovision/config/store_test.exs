@@ -1,5 +1,5 @@
 defmodule AeroVision.Config.StoreTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias AeroVision.Config.Store
 
@@ -17,7 +17,13 @@ defmodule AeroVision.Config.StoreTest do
     {:ok, pid} = GenServer.start_link(Store, [data_dir: tmp], name: name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      if Process.alive?(pid) do
+        try do
+          GenServer.stop(pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end
     end)
 
     # Subscribe to config changes via the private store's PubSub broadcasts.

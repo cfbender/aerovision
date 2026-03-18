@@ -118,9 +118,15 @@ Pin 40  GPIO21
 
 AeroVision uses two data sources — one for each display mode. Both are optional but at least one must be configured.
 
+### Flight Enrichment (automatic, no API key needed)
+
+Flight enrichment — airline name, aircraft type, route, departure/arrival times, and flight status — is provided automatically by scraping **FlightAware** and **FlightStats** public flight tracker pages. No API key or account is needed. This works in both nearby and tracked modes.
+
+The Skylink API (below) is only used as a paid fallback when both free sources fail for a given flight.
+
 ### Skylink API (Tracked mode + enrichment)
 
-Skylink is used in **tracked mode** (polling every 5 minutes by callsign) and provides flight status enrichment (airline, route, departure/arrival times) for all modes.
+Skylink provides ADS-B position data in **tracked mode** (polling every 5 minutes by callsign) and serves as a paid fallback for flight enrichment when the free scrapers (FlightAware, FlightStats) both fail. The free tier allows ~1,000 API calls per month.
 
 1. Go to **[rapidapi.com/skylink-api-skylink-api-default/api/skylink-api](https://rapidapi.com/skylink-api-skylink-api-default/api/skylink-api)**
 2. Sign in or create a free RapidAPI account
@@ -436,7 +442,7 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 │  AeroVision.Application (OTP Supervisor)                    │
 │    ├── Config.Store          JSON file on /data partition   │
 │    ├── Network.Manager       WiFi + AP fallback (VintageNet)│
-│    ├── Flight.Skylink.FlightStatus  Enrichment + cache      │
+│    ├── Flight.Skylink.FlightStatus  Enrichment pipeline + ETS cache │
 │    ├── Flight.Skylink.ADSB         ADS-B poller (tracked, 5min) │
 │    ├── Flight.OpenSky              ADS-B poller (nearby, 30s)   │
 │    ├── Flight.Tracker        State aggregation + filtering  │
@@ -458,7 +464,7 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 **Data flow**:
 1. `OpenSky` polls every 30 seconds in nearby mode (bounding box); `Skylink.ADSB` polls every 5 minutes in tracked mode (by callsign). Each source only polls when active — they don't overlap. Automatic cross-fallback if a source has no credentials.
 2. Both sources broadcast `{:flights_raw, vectors}` on the same PubSub topic. `Tracker` consumes from both.
-3. `Tracker` merges new state vectors with enriched data from `Skylink.FlightStatus`. In tracked mode, flights with no ADS-B coverage (e.g., over oceans) are shown using enrichment data only, with `---` for live telemetry.
+3. `Tracker` requests enrichment for new flights via `FlightStatus`. In nearby mode, only the 5 closest flights get enrichment requests (not all flights in the radius) to reduce unnecessary API/scraping load. `FlightStatus` runs a 3-source enrichment waterfall: **FlightAware** (HTML scraping, free, primary) → **FlightStats** (HTML scraping, free, fallback) → **Skylink API** (paid, final fallback). FlightAware and FlightStats require no API key — they scrape public flight tracker pages. Skylink is only used when both free sources fail and an API key is configured. Enrichment data is cached in ETS for 24 hours. In tracked mode, flights with stale data (>30 minutes old) are automatically re-enriched to keep ETAs and status current during long flights. Flights with terminal status (Landed, Cancelled) skip re-enrichment. When both free sources return permanent failures for a callsign, it is negatively cached to avoid repeated futile requests.
 4. `Renderer` builds display commands and sends them to `Driver`
 5. `Driver` forwards commands to the Go binary via stdin (4-byte length-prefixed JSON)
 6. The Go binary renders to the LED matrix using double-buffered vsync swaps
@@ -553,13 +559,17 @@ aerovision/
 │   │   ├── config/store.ex       # Atomic JSON settings, build-time env seeding
 │   │   ├── network/manager.ex    # WiFi + AP mode (VintageNet)
 │   │   ├── flight/
+│   │   │   ├── flightaware.ex         # FlightAware scraper (primary enrichment, free)
+│   │   │   ├── flightstats.ex         # FlightStats scraper (fallback enrichment, free)
+│   │   │   ├── airline_codes.ex       # ICAO↔IATA airline code mapping
+│   │   │   ├── flight_info.ex         # %FlightInfo{} and %Airport{} structs
 │   │   │   ├── skylink/
-│   │   │   │   ├── adsb.ex           # Skylink ADS-B poller (tracked mode, 5min)
-│   │   │   │   └── flight_status.ex  # Flight status enrichment + CubDB cache
-│   │   │   ├── opensky.ex            # OpenSky ADS-B poller (nearby mode, 30s)
-│   │   │   ├── airport_timezones.ex  # IATA → IANA timezone static map
-│   │   │   ├── tracker.ex        # State aggregation + filtering
-│   │   │   └── geo_utils.ex      # Haversine, unit conversion
+│   │   │   │   ├── adsb.ex            # Skylink ADS-B poller (tracked mode, 5min)
+│   │   │   │   └── flight_status.ex   # Enrichment pipeline + ETS/CubDB cache
+│   │   │   ├── opensky.ex             # OpenSky ADS-B poller (nearby mode, 30s)
+│   │   │   ├── airport_timezones.ex   # IATA → IANA timezone static map
+│   │   │   ├── tracker.ex             # State aggregation + filtering
+│   │   │   └── geo_utils.ex           # Haversine, unit conversion
 │   │   ├── display/
 │   │   │   ├── driver.ex         # Go Port manager, PubSub relay
 │   │   │   ├── renderer.ex       # Display mode state machine

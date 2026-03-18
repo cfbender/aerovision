@@ -1,5 +1,5 @@
 defmodule AeroVision.GPIO.ButtonTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use Mimic
 
   alias AeroVision.GPIO.Button
