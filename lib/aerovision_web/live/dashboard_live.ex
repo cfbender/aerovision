@@ -42,13 +42,14 @@ defmodule AeroVisionWeb.DashboardLive do
        wizard_scanning: false,
        wizard_skylink_api_key: config.skylink_api_key || "",
        wizard_opensky_client_id: config.opensky_client_id || "",
-       wizard_opensky_client_secret: config.opensky_client_secret || ""
+       wizard_opensky_client_secret: config.opensky_client_secret || "",
+       refreshing: MapSet.new()
      )}
   end
 
   @impl true
   def handle_info({:display_flights, flights}, socket) do
-    {:noreply, assign(socket, flights: flights)}
+    {:noreply, assign(socket, flights: flights, refreshing: MapSet.new())}
   end
 
   def handle_info({:network, :connected, ip}, socket) do
@@ -232,6 +233,11 @@ defmodule AeroVisionWeb.DashboardLive do
      )}
   end
 
+  def handle_event("refresh_flight", %{"callsign" => callsign}, socket) do
+    AeroVision.Flight.Skylink.FlightStatus.re_enrich(callsign)
+    {:noreply, update(socket, :refreshing, &MapSet.put(&1, callsign))}
+  end
+
   # ---- Render Functions -------------------------------------------------------
 
   @impl true
@@ -309,7 +315,10 @@ defmodule AeroVisionWeb.DashboardLive do
       <% else %>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <%= for flight <- @flights do %>
-            <.flight_card flight={flight} />
+            <.flight_card
+              flight={flight}
+              refreshing={MapSet.member?(@refreshing, flight.state_vector.callsign)}
+            />
           <% end %>
         </div>
       <% end %>
@@ -691,6 +700,7 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   attr :flight, :map, required: true
+  attr :refreshing, :boolean, default: false
 
   defp flight_card(assigns) do
     sv = assigns.flight.state_vector
@@ -728,6 +738,17 @@ defmodule AeroVisionWeb.DashboardLive do
             <span class="px-1.5 py-0.5 text-xs rounded bg-gray-700 text-gray-400">Ground</span>
           <% end %>
           <span class="text-sm font-mono text-gray-400">{@aircraft}</span>
+          <button
+            phx-click="refresh_flight"
+            phx-value-callsign={@callsign}
+            class="p-1 rounded text-gray-600 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+            title="Refresh flight data"
+          >
+            <.icon
+              name="hero-arrow-path"
+              class={if(@refreshing, do: "w-4 h-4 animate-spin", else: "w-4 h-4")}
+            />
+          </button>
         </div>
       </div>
 

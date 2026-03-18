@@ -329,6 +329,17 @@ MIX_TARGET=rpi0_2 MIX_ENV=prod mix deploy
 The device will reboot into the new firmware automatically.
 
 ---
+## Assembly
+
+### Enclosure
+
+- 3D print Enclosure.stl, shouldn't require any supports.
+- Uses 4 6x3 magnets glued into place on the four posts, and the screw in magnets that all of these panels seem to come with. I believe they are M3 13*2 + 5 magnet head screws.
+- The panel then stays in place magnetically, and there is a cutout for the power cord.
+- I also used an M3x8 screw to attach the Pi to one of the threaded inserts in the back of the panel right by the power cord cutout
+
+### Electronics
+- Solder on the headers and the rest is plug and play
 
 ## First Boot & Configuration
 
