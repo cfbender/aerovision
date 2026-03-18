@@ -29,6 +29,8 @@ type Command struct {
 	ArrTime      string  `json:"arr_time,omitempty"`
 	Progress     float64 `json:"progress,omitempty"`
 	AirlineColor [3]int  `json:"airline_color,omitempty"`
+	DepTimeColor [3]int  `json:"dep_time_color,omitempty"`
+	ArrTimeColor [3]int  `json:"arr_time_color,omitempty"`
 
 	// qr command
 	Data string `json:"data,omitempty"`

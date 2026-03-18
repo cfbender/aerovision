@@ -7,8 +7,12 @@ defmodule AeroVision.Display.RendererGenServerTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias AeroVision.Display.{Renderer, Driver}
-  alias AeroVision.Flight.{TrackedFlight, StateVector, FlightInfo, Airport}
+  alias AeroVision.Display.Driver
+  alias AeroVision.Display.Renderer
+  alias AeroVision.Flight.Airport
+  alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.StateVector
+  alias AeroVision.Flight.TrackedFlight
   alias AeroVision.Network.Manager, as: NetManager
 
   # ── helpers ────────────────────────────────────────────────────────────────
@@ -50,6 +54,51 @@ defmodule AeroVision.Display.RendererGenServerTest do
         departure_time: DateTime.add(now, -3600),
         actual_departure_time: nil,
         arrival_time: DateTime.add(now, 3600),
+        progress_pct: 0.5,
+        cached_at: now
+      },
+      first_seen_at: now,
+      last_seen_at: now
+    }
+  end
+
+  defp delayed_flight(dep_delay_min, arr_delay_min) do
+    now = DateTime.utc_now()
+    scheduled_dep = DateTime.add(now, -7200)
+    actual_dep = DateTime.add(scheduled_dep, dep_delay_min * 60)
+    scheduled_arr = DateTime.add(now, 3600)
+    estimated_arr = DateTime.add(scheduled_arr, arr_delay_min * 60)
+
+    %TrackedFlight{
+      state_vector: %StateVector{
+        icao24: "def456",
+        callsign: "DAL567",
+        origin_country: "USA",
+        longitude: -78.6,
+        latitude: 35.8,
+        baro_altitude: 10_668.0,
+        on_ground: false,
+        velocity: 230.0,
+        true_track: 45.0,
+        vertical_rate: 2.5,
+        geo_altitude: 10_972.8,
+        squawk: "1200",
+        last_contact: System.system_time(:second),
+        time_position: System.system_time(:second),
+        position_source: 0
+      },
+      flight_info: %FlightInfo{
+        ident: "DAL567",
+        operator: "DAL",
+        airline_name: "Delta",
+        aircraft_type: "A321",
+        aircraft_name: nil,
+        origin: %Airport{icao: "KATL", iata: "ATL", name: "Atlanta", city: "Atlanta"},
+        destination: %Airport{icao: "KJFK", iata: "JFK", name: "JFK", city: "New York"},
+        departure_time: scheduled_dep,
+        actual_departure_time: actual_dep,
+        arrival_time: scheduled_arr,
+        estimated_arrival_time: estimated_arr,
         progress_pct: 0.5,
         cached_at: now
       },
@@ -381,5 +430,91 @@ defmodule AeroVision.Display.RendererGenServerTest do
     send(pid, {:network, :ap_mode})
     :sys.get_state(pid)
     assert Process.alive?(pid)
+  end
+
+  # ── flight card delay colors ─────────────────────────────────────────────
+
+  describe "flight card delay colors" do
+    test "on-time flight produces gray time colors" do
+      pid = GenServer.whereis(Renderer)
+
+      expect(Driver, :send_command, fn cmd ->
+        assert cmd.cmd == "flight_card"
+        assert cmd.dep_time_color == [120, 120, 120]
+        assert cmd.arr_time_color == [120, 120, 120]
+        :ok
+      end)
+
+      allow(Driver, self(), pid)
+      send(pid, {:display_flights, [tracked_flight()]})
+      :sys.get_state(pid)
+    end
+
+    test "30-min delayed departure produces orange dep_time_color" do
+      pid = GenServer.whereis(Renderer)
+
+      expect(Driver, :send_command, fn cmd ->
+        assert cmd.cmd == "flight_card"
+        assert cmd.dep_time_color == [251, 146, 60]
+        :ok
+      end)
+
+      allow(Driver, self(), pid)
+      send(pid, {:display_flights, [delayed_flight(30, 0)]})
+      :sys.get_state(pid)
+    end
+
+    test "90-min delayed arrival produces red arr_time_color" do
+      pid = GenServer.whereis(Renderer)
+
+      expect(Driver, :send_command, fn cmd ->
+        assert cmd.cmd == "flight_card"
+        assert cmd.arr_time_color == [248, 113, 113]
+        :ok
+      end)
+
+      allow(Driver, self(), pid)
+      send(pid, {:display_flights, [delayed_flight(0, 90)]})
+      :sys.get_state(pid)
+    end
+
+    test "flight with nil flight_info produces gray time colors" do
+      pid = GenServer.whereis(Renderer)
+      now = DateTime.utc_now()
+
+      nil_info_flight = %TrackedFlight{
+        state_vector: %StateVector{
+          icao24: "xyz789",
+          callsign: "UAL999",
+          origin_country: "USA",
+          longitude: -78.6,
+          latitude: 35.8,
+          baro_altitude: 10_668.0,
+          on_ground: false,
+          velocity: 230.0,
+          true_track: 45.0,
+          vertical_rate: 2.5,
+          geo_altitude: 10_972.8,
+          squawk: "1200",
+          last_contact: System.system_time(:second),
+          time_position: System.system_time(:second),
+          position_source: 0
+        },
+        flight_info: nil,
+        first_seen_at: now,
+        last_seen_at: now
+      }
+
+      expect(Driver, :send_command, fn cmd ->
+        assert cmd.cmd == "flight_card"
+        assert cmd.dep_time_color == [120, 120, 120]
+        assert cmd.arr_time_color == [120, 120, 120]
+        :ok
+      end)
+
+      allow(Driver, self(), pid)
+      send(pid, {:display_flights, [nil_info_flight]})
+      :sys.get_state(pid)
+    end
   end
 end

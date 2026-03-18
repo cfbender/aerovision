@@ -1,7 +1,8 @@
 defmodule AeroVision.Flight.OpenSkyTest do
   use ExUnit.Case, async: false
-  alias AeroVision.Flight.OpenSky
+
   alias AeroVision.Config.Store
+  alias AeroVision.Flight.OpenSky
 
   setup do
     Store.reset()
@@ -9,7 +10,7 @@ defmodule AeroVision.Flight.OpenSkyTest do
   end
 
   test "module exists and compiles" do
-    assert Code.ensure_loaded?(AeroVision.Flight.OpenSky)
+    assert Code.ensure_loaded?(OpenSky)
   end
 
   @tag :capture_log

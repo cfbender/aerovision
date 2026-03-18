@@ -109,12 +109,7 @@ defmodule AeroVision.MixProject do
       {:esbuild, "~> 0.10", runtime: false},
       {:tailwind, "~> 0.3", runtime: false},
       {:heroicons,
-       github: "tailwindlabs/heroicons",
-       tag: "v2.1.1",
-       sparse: "optimized",
-       app: false,
-       compile: false,
-       depth: 1},
+       github: "tailwindlabs/heroicons", tag: "v2.1.1", sparse: "optimized", app: false, compile: false, depth: 1},
 
       # Utilities
       {:mimic, "~> 2.0", only: :test},
@@ -122,6 +117,7 @@ defmodule AeroVision.MixProject do
       {:dns_cluster, "~> 0.1"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
+      {:styler, "~> 1.11", only: [:dev, :test], runtime: false},
       {:zoneinfo, "~> 0.1"}
     ]
   end
@@ -143,7 +139,9 @@ defmodule AeroVision.MixProject do
       setup: ["deps.get", "assets.setup", &copy_zoneinfo/1],
       precommit: ["format", "compile --warnings-as-errors", "test"],
       build: ["assets.deploy", "firmware"],
-      deploy: ["assets.deploy", "firmware", "upload aerovision.local"],
+      "build.driver": ["cmd --cd go_src make build-arm"],
+      "build.driver.host": ["cmd --cd go_src make build-host"],
+      deploy: ["assets.deploy", "build.driver", "firmware", "upload aerovision.local"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind aerovision", "esbuild aerovision"],
       "assets.deploy": [

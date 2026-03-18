@@ -1,9 +1,6 @@
 import Config
 
-config :aerovision, target: Mix.target()
-
-config :elixir, time_zone_database: Zoneinfo.TimeZoneDatabase
-
+dot_env_path = Path.join(File.cwd!(), ".env")
 # ---------------------------------------------------------------------------
 # Build-time .env injection
 #
@@ -14,9 +11,6 @@ config :elixir, time_zone_database: Zoneinfo.TimeZoneDatabase
 # Values are only used to seed blank settings; anything already saved through
 # the UI takes precedence.
 # ---------------------------------------------------------------------------
-
-dot_env_path = Path.join(File.cwd!(), ".env")
-
 dot_env_raw =
   if File.exists?(dot_env_path) do
     dot_env_path
@@ -53,6 +47,26 @@ dot_env_raw =
 
 e = fn key -> Map.get(dot_env_raw, key) end
 
+# Phoenix config
+config :aerovision, AeroVisionWeb.Endpoint,
+  url: [host: "localhost"],
+  adapter: Bandit.PhoenixAdapter,
+  render_errors: [
+    formats: [html: AeroVisionWeb.ErrorHTML, json: AeroVisionWeb.ErrorJSON],
+    layout: false
+  ],
+  pubsub_server: AeroVision.PubSub,
+  live_view: [signing_salt: "aerovision_salt"]
+
+config :aerovision, :display,
+  rows: 64,
+  cols: 64,
+  chain_length: 1,
+  parallel: 1,
+  gpio_mapping: "regular",
+  brightness: 80,
+  slowdown_gpio: 1
+
 config :aerovision, :env_seeds, %{
   skylink_api_key: e.("SKYLINK_API_KEY"),
   opensky_client_id: e.("OPENSKY_CLIENT_ID"),
@@ -73,16 +87,17 @@ config :aerovision, :env_seeds, %{
   timezone: e.("TIMEZONE")
 }
 
-# Phoenix config
-config :aerovision, AeroVisionWeb.Endpoint,
-  url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
-  render_errors: [
-    formats: [html: AeroVisionWeb.ErrorHTML, json: AeroVisionWeb.ErrorJSON],
-    layout: false
-  ],
-  pubsub_server: AeroVision.PubSub,
-  live_view: [signing_salt: "aerovision_salt"]
+config :aerovision, :opensky,
+  base_url: "https://opensky-network.org/api",
+  token_url: "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+
+config :aerovision, :skylink,
+  base_url: "https://skylink-api.p.rapidapi.com",
+  host: "skylink-api.p.rapidapi.com"
+
+config :aerovision, target: Mix.target()
+
+config :elixir, time_zone_database: Zoneinfo.TimeZoneDatabase
 
 config :esbuild,
   version: "0.25.4",
@@ -102,24 +117,6 @@ config :tailwind,
     ),
     cd: Path.expand("..", __DIR__)
   ]
-
-config :aerovision, :skylink,
-  base_url: "https://skylink-api.p.rapidapi.com",
-  host: "skylink-api.p.rapidapi.com"
-
-config :aerovision, :opensky,
-  base_url: "https://opensky-network.org/api",
-  token_url:
-    "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
-
-config :aerovision, :display,
-  rows: 64,
-  cols: 64,
-  chain_length: 1,
-  parallel: 1,
-  gpio_mapping: "regular",
-  brightness: 80,
-  slowdown_gpio: 1
 
 import_config "#{Mix.target()}.exs"
 import_config "#{config_env()}.exs"

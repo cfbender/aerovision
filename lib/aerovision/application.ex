@@ -5,6 +5,10 @@ defmodule AeroVision.Application do
   Supervision tree for the flight tracking LED display system.
   """
   use Application
+
+  alias AeroVision.Network.Manager
+  alias AeroVision.Network.Watchdog
+
   require Logger
 
   @impl true
@@ -33,7 +37,7 @@ defmodule AeroVision.Application do
   defp target_children(:host) do
     [
       # Network manager (safe on host — VintageNet calls are no-ops)
-      AeroVision.Network.Manager,
+      Manager,
       # Flight data pipeline (independent sources; a single-source crash stays contained)
       AeroVision.FlightSupervisor,
       # Hardware subsystem (Driver → PreviewServer → Renderer → Button via rest_for_one)
@@ -41,14 +45,14 @@ defmodule AeroVision.Application do
       # Phoenix endpoint for development — isolated from hardware/flight crashes
       AeroVisionWeb.Endpoint,
       # Network watchdog — forces AP mode if no client connects within timeout (no-op on host)
-      AeroVision.Network.Watchdog
+      Watchdog
     ]
   end
 
   defp target_children(_target) do
     [
       # Network management (WiFi + AP fallback)
-      AeroVision.Network.Manager,
+      Manager,
       # Flight data pipeline (independent sources; a single-source crash stays contained)
       AeroVision.FlightSupervisor,
       # Hardware subsystem (Driver → Renderer → Button via rest_for_one)
@@ -56,7 +60,7 @@ defmodule AeroVision.Application do
       # Phoenix endpoint — isolated from hardware/flight crashes
       AeroVisionWeb.Endpoint,
       # Network watchdog — forces AP mode if no client connects within timeout
-      AeroVision.Network.Watchdog
+      Watchdog
     ]
   end
 
@@ -90,8 +94,7 @@ defmodule AeroVision.Application do
           addrs when is_list(addrs) ->
             addrs
             |> Enum.filter(&match?(%{family: :inet}, &1))
-            |> Enum.map(fn %{address: addr} -> :inet.ntoa(addr) |> to_string() end)
-            |> Enum.join(", ")
+            |> Enum.map_join(", ", fn %{address: addr} -> addr |> :inet.ntoa() |> to_string() end)
 
           _ ->
             "none"

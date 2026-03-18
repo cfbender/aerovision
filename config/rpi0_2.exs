@@ -1,48 +1,12 @@
 import Config
 
-config :logger, backends: [RingLogger]
-
-# Prevent Phoenix from starting the CodeReloader MixListener during compilation.
-# Phoenix 1.8 registers it as a Mix.PubSub listener which fails on Nerves because
-# Phoenix.CodeReloader is a dev-only module not compiled into the target.
-config :phoenix, :plug_init_mode, :runtime
-
-# Nerves target-specific configuration
-
-config :aerovision, AeroVisionWeb.Endpoint,
-  url: [host: "aerovision.local"],
-  http: [ip: {0, 0, 0, 0}, port: 80],
-  check_origin: false,
-  server: true,
-  secret_key_base: "target_secret_base_generate_with_mix_phx_gen_secret_at_least_64_bytes"
-
-# Use shoehorn to start the main application
-config :shoehorn,
-  init: [:nerves_runtime, :nerves_pack, :nerves_time],
-  app: Mix.Project.config()[:app]
-
-config :nerves_runtime, :kernel, use_system_registry: false
-
-# Configure mDNS — exclude usb0 so its 172.31.x.x address is never announced.
-# if_monitor is intentionally omitted: mdns_lite auto-detects VintageNet.
-config :mdns_lite,
-  hosts: [:hostname, "aerovision"],
-  ttl: 120,
-  excluded_ifnames: ["lo0", "lo", "ppp0", "wwan0", "usb0", "__unknown"],
-  services: [
-    %{
-      protocol: "http",
-      transport: "tcp",
-      port: 80
-    }
-  ]
-
 # Read WiFi credentials from .env at build time so VintageNet can connect on
 # first boot without runtime wlan0 reconfiguration. The brcmfmac driver on the
 # Pi Zero 2 W cannot reliably transition wlan0 from scan-only to infrastructure
 # mode at runtime, so credentials must be baked in before the interface starts.
 {wlan0_boot_ssid, wlan0_boot_pass} =
   case File.read(Path.join(File.cwd!(), ".env")) do
+    # Nerves target-specific configuration
     {:ok, contents} ->
       get_val = fn key, text ->
         case Regex.run(~r/^#{key}\s*=\s*['"]?([^'"\n]+)['"]?\s*$/m, text) do
@@ -71,27 +35,6 @@ wlan0_boot_config =
     %{type: VintageNetWiFi}
   end
 
-# VintageNet boot config — wlan0 includes baked-in credentials when available
-# so the brcmfmac driver can connect to WiFi immediately without a runtime
-# reconfiguration step. Falls back to scan-only mode if no credentials found.
-config :vintage_net,
-  regulatory_domain: "US",
-  config: [
-    {"usb0", %{type: VintageNetDirect}},
-    {"eth0", %{type: VintageNetEthernet, ipv4: %{method: :dhcp}}},
-    {"wlan0", wlan0_boot_config}
-  ]
-
-config :nerves_time, :servers, [
-  "0.pool.ntp.org",
-  "1.pool.ntp.org",
-  "2.pool.ntp.org",
-  "3.pool.ntp.org"
-]
-
-# Disable unnecessary kernel features
-config :nerves, :firmware, rootfs_overlay: "rootfs_overlay", fwup_conf: "fwup.conf"
-
 # SSH access for debugging — reads your local public key at build time.
 # Supports id_ed25519, id_rsa, id_ecdsa (whichever exists).
 ssh_pub_key =
@@ -103,6 +46,62 @@ ssh_pub_key =
       _ -> nil
     end
   end)
+
+config :aerovision, AeroVisionWeb.Endpoint,
+  url: [host: "aerovision.local"],
+  http: [ip: {0, 0, 0, 0}, port: 80],
+  check_origin: false,
+  server: true,
+  secret_key_base: "target_secret_base_generate_with_mix_phx_gen_secret_at_least_64_bytes"
+
+config :logger, backends: [RingLogger]
+
+# Configure mDNS — exclude usb0 so its 172.31.x.x address is never announced.
+# if_monitor is intentionally omitted: mdns_lite auto-detects VintageNet.
+config :mdns_lite,
+  hosts: [:hostname, "aerovision"],
+  ttl: 120,
+  excluded_ifnames: ["lo0", "lo", "ppp0", "wwan0", "usb0", "__unknown"],
+  services: [
+    %{
+      protocol: "http",
+      transport: "tcp",
+      port: 80
+    }
+  ]
+
+# Disable unnecessary kernel features
+config :nerves, :firmware, rootfs_overlay: "rootfs_overlay", fwup_conf: "fwup.conf"
+
+config :nerves_runtime, :kernel, use_system_registry: false
+
+config :nerves_time, :servers, [
+  "0.pool.ntp.org",
+  "1.pool.ntp.org",
+  "2.pool.ntp.org",
+  "3.pool.ntp.org"
+]
+
+# Prevent Phoenix from starting the CodeReloader MixListener during compilation.
+# Phoenix 1.8 registers it as a Mix.PubSub listener which fails on Nerves because
+# Phoenix.CodeReloader is a dev-only module not compiled into the target.
+config :phoenix, :plug_init_mode, :runtime
+
+# Use shoehorn to start the main application
+config :shoehorn,
+  init: [:nerves_runtime, :nerves_pack, :nerves_time],
+  app: Mix.Project.config()[:app]
+
+# VintageNet boot config — wlan0 includes baked-in credentials when available
+# so the brcmfmac driver can connect to WiFi immediately without a runtime
+# reconfiguration step. Falls back to scan-only mode if no credentials found.
+config :vintage_net,
+  regulatory_domain: "US",
+  config: [
+    {"usb0", %{type: VintageNetDirect}},
+    {"eth0", %{type: VintageNetEthernet, ipv4: %{method: :dhcp}}},
+    {"wlan0", wlan0_boot_config}
+  ]
 
 if ssh_pub_key do
   config :nerves_ssh, authorized_keys: [ssh_pub_key]

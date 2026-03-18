@@ -2,9 +2,12 @@ defmodule AeroVision.Flight.Skylink.FlightStatusTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias AeroVision.Flight.Skylink.FlightStatus
-  alias AeroVision.Flight.{FlightStats, FlightAware, FlightInfo, Airport}
   alias AeroVision.Config.Store
+  alias AeroVision.Flight.Airport
+  alias AeroVision.Flight.FlightAware
+  alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.FlightStats
+  alias AeroVision.Flight.Skylink.FlightStatus
 
   @cache_table :aerovision_skylink_cache
 
@@ -185,7 +188,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatusTest do
       :ets.insert(@cache_table, {"DAL1209", info, now})
 
       # Confirm it is in cache before re_enrich
-      assert FlightStatus.get_cached("DAL1209") != nil
+      assert FlightStatus.get_cached("DAL1209")
 
       FlightStatus.re_enrich("DAL1209")
 

@@ -1,5 +1,8 @@
 defmodule AeroVisionWeb.SetupLive do
+  @moduledoc false
   use AeroVisionWeb, :live_view
+
+  alias AeroVision.Network.Manager
 
   @impl true
   def mount(_params, _session, socket) do
@@ -9,8 +12,8 @@ defmodule AeroVisionWeb.SetupLive do
       AeroVision.Network.Watchdog.ping()
     end
 
-    network_mode = AeroVision.Network.Manager.current_mode()
-    ip = AeroVision.Network.Manager.current_ip()
+    network_mode = Manager.current_mode()
+    ip = Manager.current_ip()
 
     {:ok,
      assign(socket,
@@ -58,8 +61,6 @@ defmodule AeroVisionWeb.SetupLive do
     status =
       if networks == [] do
         {:info, "No networks found. Make sure you're within range and try again."}
-      else
-        nil
       end
 
     {:noreply, assign(socket, scanning: false, scan_results: networks, connect_status: status)}
@@ -75,7 +76,7 @@ defmodule AeroVisionWeb.SetupLive do
       lv = self()
 
       Task.start(fn ->
-        networks = AeroVision.Network.Manager.scan_networks()
+        networks = Manager.scan_networks()
         send(lv, {:scan_complete, networks})
       end)
 
@@ -109,7 +110,7 @@ defmodule AeroVisionWeb.SetupLive do
     if ssid == "" do
       {:noreply, assign(socket, connect_status: {:error, "Please enter a network name."})}
     else
-      AeroVision.Network.Manager.connect_wifi(ssid, password)
+      Manager.connect_wifi(ssid, password)
 
       # The AP will shut down as soon as VintageNet switches to infrastructure mode,
       # which drops this WebSocket connection. Tell the user to reconnect.

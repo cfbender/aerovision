@@ -159,11 +159,13 @@ func (d *Display) renderFlightCard(cmd Command) {
 
 	// ── Times row at y=52: departure (left) + arrival (right) ────────────
 	if cmd.DepTime != "" {
-		drawStringSmall(d.matrix, 2, 52, cmd.DepTime, 120, 120, 120)
+		dr, dg, db := colorOrDefault(cmd.DepTimeColor, 120, 120, 120)
+		drawStringSmall(d.matrix, 2, 52, cmd.DepTime, dr, dg, db)
 	}
 	if cmd.ArrTime != "" {
+		ar, ag, ab := colorOrDefault(cmd.ArrTimeColor, 120, 120, 120)
 		arrX := 62 - stringWidthSmall(cmd.ArrTime)
-		drawStringSmall(d.matrix, arrX, 52, cmd.ArrTime, 120, 120, 120)
+		drawStringSmall(d.matrix, arrX, 52, cmd.ArrTime, ar, ag, ab)
 	}
 
 	// ── Progress bar at y=60-61 (2px tall), x=2..61 (60px wide) ─────────
@@ -678,4 +680,13 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n])
+}
+
+// colorOrDefault returns the given [3]int as uint8 triple, falling back to
+// the default (dr, dg, db) when the color is the zero value [0,0,0].
+func colorOrDefault(c [3]int, dr, dg, db uint8) (uint8, uint8, uint8) {
+	if c[0] == 0 && c[1] == 0 && c[2] == 0 {
+		return dr, dg, db
+	}
+	return uint8(c[0]), uint8(c[1]), uint8(c[2])
 }

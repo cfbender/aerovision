@@ -15,6 +15,8 @@ defmodule AeroVision.Network.Manager do
 
   use GenServer
 
+  alias AeroVision.Config.Store
+
   require Logger
 
   @pubsub AeroVision.PubSub
@@ -149,8 +151,8 @@ defmodule AeroVision.Network.Manager do
     # Subscribe to VintageNet connection-state changes
     vintage_net_subscribe(["interface", @interface, "connection"])
 
-    ssid = AeroVision.Config.Store.get(:wifi_ssid)
-    password = AeroVision.Config.Store.get(:wifi_password)
+    ssid = Store.get(:wifi_ssid)
+    password = Store.get(:wifi_password)
 
     state =
       if credentials_present?(ssid, password) do
@@ -199,8 +201,8 @@ defmodule AeroVision.Network.Manager do
   def handle_call({:connect_wifi, ssid, password}, _from, state) do
     Logger.info("[Network.Manager] connect_wifi called for SSID: #{ssid}")
 
-    AeroVision.Config.Store.put(:wifi_ssid, ssid)
-    AeroVision.Config.Store.put(:wifi_password, password)
+    Store.put(:wifi_ssid, ssid)
+    Store.put(:wifi_password, password)
 
     state = cancel_reconnect_timer(state)
 
@@ -235,10 +237,7 @@ defmodule AeroVision.Network.Manager do
   # VintageNet property-change messages arrive as:
   # {VintageNet, ["interface", iface, "connection"], old_value, new_value, metadata}
   @impl true
-  def handle_info(
-        {VintageNet, ["interface", @interface, "connection"], _old, new_value, _meta},
-        state
-      ) do
+  def handle_info({VintageNet, ["interface", @interface, "connection"], _old, new_value, _meta}, state) do
     Logger.info("[Network.Manager] Connection event on #{@interface}: #{inspect(new_value)}")
     state = handle_connection_change(new_value, state)
     {:noreply, state}
@@ -263,9 +262,7 @@ defmodule AeroVision.Network.Manager do
   # Reconnect timer fired — still disconnected; fall back to AP mode
   @impl true
   def handle_info(:reconnect_timeout, state) do
-    Logger.warning(
-      "[Network.Manager] Reconnect timeout — still disconnected, switching to AP mode"
-    )
+    Logger.warning("[Network.Manager] Reconnect timeout — still disconnected, switching to AP mode")
 
     configure_ap()
     broadcast_ap_mode()
@@ -371,9 +368,7 @@ defmodule AeroVision.Network.Manager do
   end
 
   defp handle_connection_change(:disconnected, %{mode: :infrastructure} = state) do
-    Logger.warning(
-      "[Network.Manager] Disconnected — starting #{@reconnect_timeout_ms}ms fallback timer"
-    )
+    Logger.warning("[Network.Manager] Disconnected — starting #{@reconnect_timeout_ms}ms fallback timer")
 
     Phoenix.PubSub.broadcast(@pubsub, @topic, {:network, :disconnected})
     state = cancel_reconnect_timer(state)
@@ -459,8 +454,6 @@ defmodule AeroVision.Network.Manager do
   defp vintage_net_get(property) do
     if on_target?() do
       apply(VintageNet, :get, [property])
-    else
-      nil
     end
   end
 end

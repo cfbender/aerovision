@@ -14,6 +14,7 @@ defmodule AeroVision.Display.Driver do
   """
 
   use GenServer
+
   require Logger
 
   # ---------------------------------------------------------------------------
@@ -57,9 +58,7 @@ defmodule AeroVision.Display.Driver do
         port = open_port(path)
         {port, true}
       else
-        Logger.warning(
-          "[Display.Driver] led_driver binary not found at #{path} — running in no-op mode"
-        )
+        Logger.warning("[Display.Driver] led_driver binary not found at #{path} — running in no-op mode")
 
         {nil, false}
       end
@@ -164,9 +163,7 @@ defmodule AeroVision.Display.Driver do
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.error(
-      "[Display.Driver] led_driver exited with status #{status} — degrading to no-op mode, retrying in 5s"
-    )
+    Logger.error("[Display.Driver] led_driver exited with status #{status} — degrading to no-op mode, retrying in 5s")
 
     Process.send_after(self(), :retry_port, 5_000)
     {:noreply, %{state | port: nil, alive: false}}
@@ -210,9 +207,7 @@ defmodule AeroVision.Display.Driver do
         Logger.info("[Display.Driver] Disabled RT scheduler throttle (sched_rt_runtime_us = -1)")
 
       {:error, reason} ->
-        Logger.warning(
-          "[Display.Driver] Could not disable RT scheduler throttle: #{inspect(reason)}"
-        )
+        Logger.warning("[Display.Driver] Could not disable RT scheduler throttle: #{inspect(reason)}")
     end
 
     {:noreply, state}

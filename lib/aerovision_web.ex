@@ -9,9 +9,10 @@ defmodule AeroVisionWeb do
   def router do
     quote do
       use Phoenix.Router, helpers: false
-      import Plug.Conn
+
       import Phoenix.Controller
       import Phoenix.LiveView.Router
+      import Plug.Conn
     end
   end
 
@@ -62,10 +63,11 @@ defmodule AeroVisionWeb do
 
   defp html_helpers do
     quote do
-      import Phoenix.HTML
       import AeroVisionWeb.CoreComponents
-      alias Phoenix.LiveView.JS
+      import Phoenix.HTML
+
       alias AeroVisionWeb.Layouts
+      alias Phoenix.LiveView.JS
 
       unquote(verified_routes())
     end

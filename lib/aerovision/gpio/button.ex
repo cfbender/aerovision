@@ -17,9 +17,10 @@ defmodule AeroVision.GPIO.Button do
   """
 
   use GenServer
-  require Logger
 
   alias AeroVision.Network.Manager, as: NetworkManager
+
+  require Logger
 
   @pubsub AeroVision.PubSub
   @topic "gpio"
@@ -63,9 +64,7 @@ defmodule AeroVision.GPIO.Button do
         {:ok, %{state | gpio: gpio}}
 
       {:error, reason} ->
-        Logger.warning(
-          "[GPIO.Button] Could not open GPIO pin #{pin}: #{inspect(reason)} — running in no-op mode"
-        )
+        Logger.warning("[GPIO.Button] Could not open GPIO pin #{pin}: #{inspect(reason)} — running in no-op mode")
 
         {:ok, state}
 

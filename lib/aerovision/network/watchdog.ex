@@ -12,9 +12,10 @@ defmodule AeroVision.Network.Watchdog do
   """
 
   use GenServer
+
   require Logger
 
-  @timeout_ms :timer.minutes(5)
+  @timeout_ms to_timeout(minute: 5)
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -28,9 +29,7 @@ defmodule AeroVision.Network.Watchdog do
   @impl true
   def init(_opts) do
     if on_target?() do
-      Logger.info(
-        "[Watchdog] Armed — will force AP mode in #{div(@timeout_ms, 60_000)} minutes if no client connects"
-      )
+      Logger.info("[Watchdog] Armed — will force AP mode in #{div(@timeout_ms, 60_000)} minutes if no client connects")
 
       timer = Process.send_after(self(), :timeout, @timeout_ms)
       {:ok, %{timer: timer, armed: true}}

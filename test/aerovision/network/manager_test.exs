@@ -4,8 +4,8 @@ defmodule AeroVision.Network.ManagerTest do
   # AeroVision.PubSub and AeroVision.Config.Store are started by the application
   # supervisor (target: :test in config/test.exs). Tests must NOT re-start them.
 
-  alias AeroVision.Network.Manager
   alias AeroVision.Config.Store
+  alias AeroVision.Network.Manager
 
   # ── setup ──────────────────────────────────────────────────────────────────
   # Subscribe to "network" BEFORE starting Manager so we catch any broadcast

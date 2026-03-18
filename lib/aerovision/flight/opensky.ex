@@ -24,11 +24,13 @@ defmodule AeroVision.Flight.OpenSky do
   """
 
   use GenServer
-  require Logger
 
   alias AeroVision.Config.Store
-  alias AeroVision.Flight.{StateVector, GeoUtils}
+  alias AeroVision.Flight.GeoUtils
+  alias AeroVision.Flight.StateVector
   alias AeroVision.TimeSync
+
+  require Logger
 
   @pubsub AeroVision.PubSub
   @topic "flights"
@@ -90,8 +92,7 @@ defmodule AeroVision.Flight.OpenSky do
   # If lat, lon, and radius all change in quick succession (three separate
   # config_changed messages), only one HTTP request fires.
   @impl true
-  def handle_info({:config_changed, key, _value}, state)
-      when key in [:location_lat, :location_lon, :radius_km] do
+  def handle_info({:config_changed, key, _value}, state) when key in [:location_lat, :location_lon, :radius_km] do
     if state.mode == :nearby do
       Logger.info("[OpenSky] Location changed, scheduling re-poll")
       if state.poll_timer, do: Process.cancel_timer(state.poll_timer)
@@ -116,8 +117,7 @@ defmodule AeroVision.Flight.OpenSky do
   end
 
   # When OpenSky credentials change, reschedule (may enable or disable polling).
-  def handle_info({:config_changed, key, _value}, state)
-      when key in [:opensky_client_id, :opensky_client_secret] do
+  def handle_info({:config_changed, key, _value}, state) when key in [:opensky_client_id, :opensky_client_secret] do
     Logger.info("[OpenSky] Credentials changed, rescheduling")
     {:noreply, schedule_poll(state)}
   end
@@ -139,11 +139,7 @@ defmodule AeroVision.Flight.OpenSky do
   # ─────────────────────────────────────────────────────────── fetch logic ──
 
   defp do_fetch(state) do
-    if not TimeSync.synchronized?() do
-      Logger.debug("[OpenSky] Clock not synced — deferring poll")
-      schedule_poll(state)
-      state
-    else
+    if TimeSync.synchronized?() do
       if should_poll?(state) do
         case ensure_token(state) do
           {:ok, new_state} ->
@@ -157,6 +153,10 @@ defmodule AeroVision.Flight.OpenSky do
       else
         state
       end
+    else
+      Logger.debug("[OpenSky] Clock not synced — deferring poll")
+      schedule_poll(state)
+      state
     end
   end
 

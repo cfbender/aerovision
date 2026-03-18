@@ -3,7 +3,12 @@ defmodule AeroVision.Flight.TrackerTest do
   use Mimic
 
   alias AeroVision.Config.Store
-  alias AeroVision.Flight.{Tracker, StateVector, TrackedFlight, FlightInfo, Airport}
+  alias AeroVision.Flight.Airport
+  alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.Skylink.FlightStatus
+  alias AeroVision.Flight.StateVector
+  alias AeroVision.Flight.TrackedFlight
+  alias AeroVision.Flight.Tracker
 
   # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -93,9 +98,9 @@ defmodule AeroVision.Flight.TrackerTest do
 
     # Stub FlightStatus functions (private to this test process) so no HTTP happens.
     # Tests inject enrichment results directly via broadcast_enriched/2.
-    stub(AeroVision.Flight.Skylink.FlightStatus, :enrich, fn _callsign -> :ok end)
-    stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> false end)
-    stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn _callsign -> :ok end)
+    stub(FlightStatus, :enrich, fn _callsign -> :ok end)
+    stub(FlightStatus, :needs_refresh?, fn _callsign -> false end)
+    stub(FlightStatus, :re_enrich, fn _callsign -> :ok end)
 
     # Ensure the ETS cache table exists for FlightStatus.get_cached/1.
     cache_table = :aerovision_skylink_cache
@@ -111,7 +116,7 @@ defmodule AeroVision.Flight.TrackerTest do
     # Extend the FlightStatus stubs to the Tracker process after it starts.
     start_supervised!({Tracker, data_dir: tmp_dir})
     tracker_pid = GenServer.whereis(Tracker)
-    allow(AeroVision.Flight.Skylink.FlightStatus, self(), tracker_pid)
+    allow(FlightStatus, self(), tracker_pid)
 
     Phoenix.PubSub.subscribe(AeroVision.PubSub, "display")
     drain_initial_broadcast()
@@ -171,7 +176,7 @@ defmodule AeroVision.Flight.TrackerTest do
 
     [flight] = flights
     assert flight.state_vector.baro_altitude == 20_000.0
-    assert flight.flight_info != nil
+    assert flight.flight_info
     assert flight.flight_info.ident == "AAL1234"
   end
 
@@ -197,7 +202,7 @@ defmodule AeroVision.Flight.TrackerTest do
     assert_receive {:display_flights, flights}
 
     [flight] = flights
-    assert flight.flight_info != nil
+    assert flight.flight_info
     assert flight.flight_info.airline_name == "American Airlines"
   end
 
@@ -212,7 +217,7 @@ defmodule AeroVision.Flight.TrackerTest do
     assert_receive {:display_flights, flights}
 
     [flight] = flights
-    assert flight.flight_info.progress_pct != nil
+    assert flight.flight_info.progress_pct
     assert_in_delta flight.flight_info.progress_pct, 0.5, 0.05
   end
 
@@ -695,7 +700,7 @@ defmodule AeroVision.Flight.TrackerTest do
 
       # bad estimated rejected → uses scheduled arrival
       # 90 min elapsed of 120 min total → ~75%
-      refute is_nil(flight.flight_info.progress_pct)
+      assert flight.flight_info.progress_pct
       assert_in_delta flight.flight_info.progress_pct, 0.75, 0.05
     end
 
@@ -800,7 +805,7 @@ defmodule AeroVision.Flight.TrackerTest do
       # Track which callsigns had enrich called
       test_pid = self()
 
-      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 5, fn callsign ->
+      expect(FlightStatus, :enrich, 5, fn callsign ->
         send(test_pid, {:enrich_called, callsign})
         :ok
       end)
@@ -855,7 +860,7 @@ defmodule AeroVision.Flight.TrackerTest do
       test_pid = self()
 
       # Only 5 DAL flights exist, all should be enriched (≤ @enrich_candidates limit)
-      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 5, fn callsign ->
+      expect(FlightStatus, :enrich, 5, fn callsign ->
         send(test_pid, {:enrich_called, callsign})
         :ok
       end)
@@ -893,7 +898,7 @@ defmodule AeroVision.Flight.TrackerTest do
 
       # In tracked mode, request_missing_enrichment is used — all 3 unenriched
       # tracked callsigns should get enrichment calls
-      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 3, fn callsign ->
+      expect(FlightStatus, :enrich, 3, fn callsign ->
         send(test_pid, {:enrich_called, callsign})
         :ok
       end)
@@ -937,7 +942,7 @@ defmodule AeroVision.Flight.TrackerTest do
       ]
 
       # Use a stub (not expect) to avoid counting during initial seed
-      stub(AeroVision.Flight.Skylink.FlightStatus, :enrich, fn _callsign -> :ok end)
+      stub(FlightStatus, :enrich, fn _callsign -> :ok end)
 
       broadcast_raw(vectors)
       assert_receive {:display_flights, _}
@@ -947,7 +952,7 @@ defmodule AeroVision.Flight.TrackerTest do
 
       # After switching to DAL filter, only DAL flights (all 3 are within top-5
       # by distance after filter) should get enrichment
-      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 3, fn callsign ->
+      expect(FlightStatus, :enrich, 3, fn callsign ->
         send(test_pid, {:enrich_called, callsign})
         :ok
       end)
@@ -991,9 +996,9 @@ defmodule AeroVision.Flight.TrackerTest do
       test_pid = self()
 
       # Override: needs_refresh? returns true for AAL1234
-      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+      stub(FlightStatus, :needs_refresh?, fn _callsign -> true end)
 
-      expect(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, 1, fn callsign ->
+      expect(FlightStatus, :re_enrich, 1, fn callsign ->
         send(test_pid, {:re_enrich_called, callsign})
         :ok
       end)
@@ -1021,11 +1026,11 @@ defmodule AeroVision.Flight.TrackerTest do
       flush_mailbox()
 
       # needs_refresh? returns true but status is terminal — should NOT call re_enrich
-      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+      stub(FlightStatus, :needs_refresh?, fn _callsign -> true end)
 
       test_pid = self()
 
-      stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn callsign ->
+      stub(FlightStatus, :re_enrich, fn callsign ->
         send(test_pid, {:re_enrich_called, callsign})
         :ok
       end)
@@ -1049,11 +1054,11 @@ defmodule AeroVision.Flight.TrackerTest do
       assert_receive {:display_flights, _}
       flush_mailbox()
 
-      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+      stub(FlightStatus, :needs_refresh?, fn _callsign -> true end)
 
       test_pid = self()
 
-      stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn callsign ->
+      stub(FlightStatus, :re_enrich, fn callsign ->
         send(test_pid, {:re_enrich_called, callsign})
         :ok
       end)
@@ -1073,11 +1078,11 @@ defmodule AeroVision.Flight.TrackerTest do
       assert_receive {:display_flights, _}
       flush_mailbox()
 
-      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+      stub(FlightStatus, :needs_refresh?, fn _callsign -> true end)
 
       test_pid = self()
 
-      stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn callsign ->
+      stub(FlightStatus, :re_enrich, fn callsign ->
         send(test_pid, {:re_enrich_called, callsign})
         :ok
       end)

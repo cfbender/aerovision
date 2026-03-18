@@ -1,4 +1,5 @@
 defmodule AeroVisionWeb.LogsLive do
+  @moduledoc false
   use AeroVisionWeb, :live_view
 
   @levels [:debug, :info, :notice, :warning, :error, :critical, :alert, :emergency]
@@ -185,7 +186,8 @@ defmodule AeroVisionWeb.LogsLive do
   end
 
   defp format_timestamp({{_y, _mo, _d}, {h, m, s, ms}}) do
-    :io_lib.format("~2..0B:~2..0B:~2..0B.~3..0B", [h, m, s, ms])
+    "~2..0B:~2..0B:~2..0B.~3..0B"
+    |> :io_lib.format([h, m, s, ms])
     |> to_string()
   end
 

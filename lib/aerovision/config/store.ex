@@ -148,9 +148,7 @@ defmodule AeroVision.Config.Store do
         %{}
 
       {:error, reason} ->
-        Logger.warning(
-          "[Config.Store] Could not read #{path}: #{inspect(reason)} — using defaults"
-        )
+        Logger.warning("[Config.Store] Could not read #{path}: #{inspect(reason)} — using defaults")
 
         %{}
     end
@@ -170,9 +168,7 @@ defmodule AeroVision.Config.Store do
                 :ok
 
               {:error, reason} ->
-                Logger.error(
-                  "[Config.Store] Failed to rename #{tmp} → #{path}: #{inspect(reason)}"
-                )
+                Logger.error("[Config.Store] Failed to rename #{tmp} → #{path}: #{inspect(reason)}")
             end
 
           {:error, reason} ->
@@ -186,17 +182,16 @@ defmodule AeroVision.Config.Store do
 
   # Encode stored map for JSON: convert atom values to strings for known keys.
   defp encode_stored(stored) do
-    stored
-    |> Enum.map(fn {k, v} ->
+    Map.new(stored, fn {k, v} ->
       v =
-        cond do
-          is_atom(v) and not is_nil(v) and not is_boolean(v) -> Atom.to_string(v)
-          true -> v
+        if is_atom(v) and not is_nil(v) and not is_boolean(v) do
+          Atom.to_string(v)
+        else
+          v
         end
 
       {Atom.to_string(k), v}
     end)
-    |> Map.new()
   end
 
   # Decode a JSON-decoded map (string keys, string values) back to atom keys/values.
@@ -214,7 +209,7 @@ defmodule AeroVision.Config.Store do
   # Only accept keys that are known config keys — ignore anything else.
   defp parse_key(str) do
     key = String.to_existing_atom(str)
-    if Map.has_key?(@defaults, key), do: key, else: nil
+    if Map.has_key?(@defaults, key), do: key
   rescue
     ArgumentError -> nil
   end
@@ -240,8 +235,7 @@ defmodule AeroVision.Config.Store do
     seeds = Application.get_env(:aerovision, :env_seeds, %{})
 
     updated =
-      seeds
-      |> Enum.reduce(stored, fn {config_key, raw}, acc ->
+      Enum.reduce(seeds, stored, fn {config_key, raw}, acc ->
         with raw when is_binary(raw) and raw != "" <- raw,
              {:ok, value} <- coerce(config_key, raw),
              true <- blank_in_stored?(acc, config_key) do
@@ -288,8 +282,7 @@ defmodule AeroVision.Config.Store do
     end
   end
 
-  defp coerce(key, raw)
-       when key in [:display_brightness, :display_cycle_seconds] do
+  defp coerce(key, raw) when key in [:display_brightness, :display_cycle_seconds] do
     case Integer.parse(raw) do
       {i, _} -> {:ok, i}
       :error -> :error

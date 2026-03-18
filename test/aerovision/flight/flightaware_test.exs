@@ -1,13 +1,14 @@
 defmodule AeroVision.Flight.FlightAwareTest do
   use ExUnit.Case, async: true
 
+  alias AeroVision.Flight.Airport
   alias AeroVision.Flight.FlightAware
-  alias AeroVision.Flight.{FlightInfo, Airport}
+  alias AeroVision.Flight.FlightInfo
 
   @fixtures_dir Path.join([__DIR__, "..", "..", "fixtures"])
 
   defp read_fixture(name) do
-    Path.join(@fixtures_dir, name) |> File.read!()
+    @fixtures_dir |> Path.join(name) |> File.read!()
   end
 
   describe "parse_html/1 with arrived flight" do

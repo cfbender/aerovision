@@ -8,6 +8,8 @@ defmodule AeroVision.GPIO.ButtonTest do
 
   # Send a GPIO interrupt with an explicit timestamp in nanoseconds,
   # matching what Circuits.GPIO v2 sends on real hardware.
+  alias AeroVision.Network.Manager
+
   defp gpio_event(pid, value, ts_ns) do
     send(pid, {:circuits_gpio, 26, ts_ns, value})
     # Sync: wait for GenServer to process the message
@@ -30,14 +32,14 @@ defmodule AeroVision.GPIO.ButtonTest do
 
     # Stub Network.Manager.force_ap_mode so long-press tests don't need
     # the real Network.Manager process.
-    stub(AeroVision.Network.Manager, :force_ap_mode, fn -> :ok end)
+    stub(Manager, :force_ap_mode, fn -> :ok end)
 
     start_supervised!(Button)
 
     # Extend the Network.Manager stub to the Button GenServer process
     # so calls from within handle_gpio_value reach the stub.
     button_pid = GenServer.whereis(Button)
-    allow(AeroVision.Network.Manager, self(), button_pid)
+    allow(Manager, self(), button_pid)
 
     Phoenix.PubSub.subscribe(AeroVision.PubSub, "gpio")
     :ok
@@ -90,7 +92,7 @@ defmodule AeroVision.GPIO.ButtonTest do
     pid = GenServer.whereis(Button)
 
     # Expect exactly one call to force_ap_mode
-    expect(AeroVision.Network.Manager, :force_ap_mode, fn -> :ok end)
+    expect(Manager, :force_ap_mode, fn -> :ok end)
 
     press_and_release(pid, 3000)
     assert_receive {:button, :long_press}

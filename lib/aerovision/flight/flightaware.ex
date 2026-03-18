@@ -13,9 +13,10 @@ defmodule AeroVision.Flight.FlightAware do
   caller (typically `Skylink.FlightStatus` GenServer).
   """
 
-  require Logger
+  alias AeroVision.Flight.Airport
+  alias AeroVision.Flight.FlightInfo
 
-  alias AeroVision.Flight.{FlightInfo, Airport}
+  require Logger
 
   @base_url "https://www.flightaware.com/live/flight"
 
@@ -122,8 +123,7 @@ defmodule AeroVision.Flight.FlightAware do
     end
   end
 
-  defp extract_first_flight(%{"flights" => flights})
-       when is_map(flights) and map_size(flights) > 0 do
+  defp extract_first_flight(%{"flights" => flights}) when is_map(flights) and map_size(flights) > 0 do
     {_key, flight} = Enum.at(flights, 0)
     {:ok, flight}
   end
@@ -213,9 +213,7 @@ defmodule AeroVision.Flight.FlightAware do
       cached_at: DateTime.utc_now()
     }
 
-    Logger.debug(
-      "FlightAware parsed flight: #{inspect(info.ident)} status=#{inspect(info.status)}"
-    )
+    Logger.debug("FlightAware parsed flight: #{inspect(info.ident)} status=#{inspect(info.status)}")
 
     {:ok, info}
   end

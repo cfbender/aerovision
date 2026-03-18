@@ -1,4 +1,5 @@
 defmodule AeroVisionWeb.PreviewLive do
+  @moduledoc false
   use AeroVisionWeb, :live_view
 
   @impl true
@@ -29,7 +30,7 @@ defmodule AeroVisionWeb.PreviewLive do
 
         assign(socket,
           on_device?: false,
-          last_updated: if(last_pixels, do: DateTime.utc_now(), else: nil),
+          last_updated: if(last_pixels, do: DateTime.utc_now()),
           pixel_count: if(last_pixels, do: length(last_pixels), else: 0),
           timezone: AeroVision.Config.Store.get(:timezone)
         )

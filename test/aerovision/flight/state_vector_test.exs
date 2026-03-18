@@ -1,5 +1,6 @@
 defmodule AeroVision.Flight.StateVectorTest do
   use ExUnit.Case, async: true
+
   alias AeroVision.Flight.StateVector
 
   # A well-formed Skylink-format map matching the fields returned by the
@@ -181,7 +182,7 @@ defmodule AeroVision.Flight.StateVectorTest do
     end
 
     test "map with non-binary icao24 returns nil" do
-      assert StateVector.from_skylink(Map.put(valid_map(), "icao24", 12345)) == nil
+      assert StateVector.from_skylink(Map.put(valid_map(), "icao24", 12_345)) == nil
     end
 
     test "empty map returns nil" do

@@ -1,9 +1,13 @@
 defmodule AeroVisionWeb.DashboardLive do
+  @moduledoc false
   use AeroVisionWeb, :live_view
 
-  alias AeroVision.Flight.Tracker
-  alias AeroVision.Flight.AircraftCodes
+  alias AeroVision.Config.Store
   alias AeroVision.Display.Renderer
+  alias AeroVision.Flight.AircraftCodes
+  alias AeroVision.Flight.DelayUtils
+  alias AeroVision.Flight.Tracker
+  alias AeroVision.Network.Manager
 
   @impl true
   def mount(_params, _session, socket) do
@@ -12,21 +16,21 @@ defmodule AeroVisionWeb.DashboardLive do
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "network")
       Phoenix.PubSub.subscribe(AeroVision.PubSub, "config")
       # Ask Tracker to re-broadcast current state so we don't wait for the next poll
-      AeroVision.Flight.Tracker.broadcast_now()
+      Tracker.broadcast_now()
       # Disarm the network watchdog — a client has successfully reached the UI
       AeroVision.Network.Watchdog.ping()
     end
 
-    config = AeroVision.Config.Store.all()
+    config = Store.all()
     flights = Tracker.get_flights()
-    network_mode = AeroVision.Network.Manager.current_mode()
-    ip = AeroVision.Network.Manager.current_ip()
+    network_mode = Manager.current_mode()
+    ip = Manager.current_ip()
 
     setup_step = compute_setup_step(config)
 
     {:ok,
      assign(socket,
-       page_title: if(setup_step != :done, do: "Setup", else: "Dashboard"),
+       page_title: if(setup_step == :done, do: "Dashboard", else: "Setup"),
        flights: flights,
        mode: config.display_mode,
        network_mode: network_mode,
@@ -61,7 +65,7 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   def handle_info({:config_changed, _key, _value}, socket) do
-    config = AeroVision.Config.Store.all()
+    config = Store.all()
     setup_step = compute_setup_step(config)
     {:noreply, assign(socket, setup_step: setup_step, setup_complete: setup_step == :done)}
   end
@@ -79,14 +83,16 @@ defmodule AeroVisionWeb.DashboardLive do
     ssid = String.trim(params["ssid"] || "")
     password = params["password"] || ""
 
-    if ssid != "" do
+    if ssid == "" do
+      {:noreply, socket}
       # Save credentials now so later steps can read them, but defer the
       # actual WiFi connection until setup is complete — connecting immediately
       # would drop the AP and disconnect the browser before setup is done.
-      AeroVision.Config.Store.put(:wifi_ssid, ssid)
-      AeroVision.Config.Store.put(:wifi_password, password)
+    else
+      Store.put(:wifi_ssid, ssid)
+      Store.put(:wifi_password, password)
 
-      config = AeroVision.Config.Store.all()
+      config = Store.all()
 
       {:noreply,
        assign(socket,
@@ -95,8 +101,6 @@ defmodule AeroVisionWeb.DashboardLive do
          wizard_wifi_saved: true,
          setup_step: compute_setup_step(config)
        )}
-    else
-      {:noreply, socket}
     end
   end
 
@@ -106,20 +110,20 @@ defmodule AeroVisionWeb.DashboardLive do
     opensky_secret = String.trim(params["opensky_client_secret"] || "")
 
     if skylink_api_key != "" do
-      AeroVision.Config.Store.put(:skylink_api_key, skylink_api_key)
+      Store.put(:skylink_api_key, skylink_api_key)
     end
 
     if opensky_id != "" do
-      AeroVision.Config.Store.put(:opensky_client_id, opensky_id)
+      Store.put(:opensky_client_id, opensky_id)
     end
 
     if opensky_secret != "" do
-      AeroVision.Config.Store.put(:opensky_client_secret, opensky_secret)
+      Store.put(:opensky_client_secret, opensky_secret)
     end
 
-    AeroVision.Config.Store.put(:api_keys_seen, true)
+    Store.put(:api_keys_seen, true)
 
-    config = AeroVision.Config.Store.all()
+    config = Store.all()
     {:noreply, assign(socket, setup_step: compute_setup_step(config))}
   end
 
@@ -129,12 +133,12 @@ defmodule AeroVisionWeb.DashboardLive do
     radius_mi = parse_float(params["radius_mi"])
 
     if lat && lon && radius_mi do
-      AeroVision.Config.Store.put(:location_lat, lat)
-      AeroVision.Config.Store.put(:location_lon, lon)
-      AeroVision.Config.Store.put(:radius_km, Float.round(radius_mi * 1.60934, 2))
+      Store.put(:location_lat, lat)
+      Store.put(:location_lon, lon)
+      Store.put(:radius_km, Float.round(radius_mi * 1.60934, 2))
     end
 
-    config = AeroVision.Config.Store.all()
+    config = Store.all()
     next_step = compute_setup_step(config)
 
     # Setup complete — now trigger WiFi connection if credentials were entered.
@@ -142,7 +146,7 @@ defmodule AeroVisionWeb.DashboardLive do
     # enough for the user to finish all steps.
     connecting =
       if next_step == :done and socket.assigns.wizard_wifi_saved do
-        AeroVision.Network.Manager.connect_wifi(
+        Manager.connect_wifi(
           socket.assigns.wizard_ssid,
           socket.assigns.wizard_password
         )
@@ -161,17 +165,17 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   def handle_event("wizard_scan_wifi", _params, socket) do
-    if Application.get_env(:aerovision, :target, :host) != :host do
+    if Application.get_env(:aerovision, :target, :host) == :host do
+      {:noreply, assign(socket, wizard_scanning: false, wizard_scan_results: [])}
+    else
       lv = self()
 
       Task.start(fn ->
-        networks = AeroVision.Network.Manager.scan_networks()
+        networks = Manager.scan_networks()
         send(lv, {:wizard_scan_complete, networks})
       end)
 
       {:noreply, assign(socket, wizard_scanning: true, wizard_scan_results: [])}
-    else
-      {:noreply, assign(socket, wizard_scanning: false, wizard_scan_results: [])}
     end
   end
 
@@ -186,7 +190,7 @@ defmodule AeroVisionWeb.DashboardLive do
   def handle_event("skip_setup", _params, socket) do
     connecting =
       if socket.assigns.wizard_wifi_saved do
-        AeroVision.Network.Manager.connect_wifi(
+        Manager.connect_wifi(
           socket.assigns.wizard_ssid,
           socket.assigns.wizard_password
         )
@@ -196,13 +200,12 @@ defmodule AeroVisionWeb.DashboardLive do
         false
       end
 
-    {:noreply,
-     assign(socket, setup_step: :done, setup_complete: true, wizard_connecting: connecting)}
+    {:noreply, assign(socket, setup_step: :done, setup_complete: true, wizard_connecting: connecting)}
   end
 
   def handle_event("skip_step", _params, socket) do
     if socket.assigns.setup_step == :api_keys do
-      AeroVision.Config.Store.put(:api_keys_seen, true)
+      Store.put(:api_keys_seen, true)
     end
 
     next_step =
@@ -215,7 +218,7 @@ defmodule AeroVisionWeb.DashboardLive do
 
     connecting =
       if next_step == :done and socket.assigns.wizard_wifi_saved do
-        AeroVision.Network.Manager.connect_wifi(
+        Manager.connect_wifi(
           socket.assigns.wizard_ssid,
           socket.assigns.wizard_password
         )
@@ -705,7 +708,7 @@ defmodule AeroVisionWeb.DashboardLive do
   defp flight_card(assigns) do
     sv = assigns.flight.state_vector
     fi = assigns.flight.flight_info
-    timezone = AeroVision.Config.Store.get(:timezone)
+    timezone = Store.get(:timezone)
 
     assigns =
       assign(assigns,
@@ -721,6 +724,12 @@ defmodule AeroVisionWeb.DashboardLive do
         destination: format_airport(fi && fi.destination),
         dep_time: Renderer.format_time(Renderer.best_departure_time(fi), timezone),
         arr_time: Renderer.format_time(Renderer.best_arrival_time(fi), timezone),
+        dep_delay_min:
+          DelayUtils.compute_delay(
+            fi && (fi.actual_departure_time || fi.estimated_departure_time),
+            fi && fi.departure_time
+          ),
+        arr_delay_min: DelayUtils.compute_delay(fi && Renderer.best_arrival_time(fi), fi && fi.arrival_time),
         progress: (fi && fi.progress_pct) || 0.0,
         on_ground: sv.on_ground || false
       )
@@ -756,12 +765,12 @@ defmodule AeroVisionWeb.DashboardLive do
       <div class="flex items-center gap-2 text-sm">
         <div>
           <div class="font-mono text-white font-medium">{@origin}</div>
-          <div class="font-mono text-xs text-gray-500">{@dep_time}</div>
+          <div class={["font-mono text-xs", DelayUtils.delay_color(@dep_delay_min)]}>{@dep_time}</div>
         </div>
         <span class="text-gray-600 text-xs flex-1 text-center">──────▶</span>
         <div class="text-right">
           <div class="font-mono text-white font-medium">{@destination}</div>
-          <div class="font-mono text-xs text-gray-500">{@arr_time}</div>
+          <div class={["font-mono text-xs", DelayUtils.delay_color(@arr_delay_min)]}>{@arr_time}</div>
         </div>
       </div>
 

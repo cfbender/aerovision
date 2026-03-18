@@ -1,5 +1,6 @@
 defmodule AeroVision.Display.RendererTest do
   use ExUnit.Case, async: true
+
   alias AeroVision.Display.Renderer
   alias AeroVision.Flight.FlightInfo
 

@@ -8,8 +8,7 @@ if Mix.target() == :host do
     check_origin: false,
     code_reloader: true,
     debug_errors: true,
-    secret_key_base:
-      "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_purposes_only",
+    secret_key_base: "dev_secret_key_base_that_is_at_least_64_bytes_long_for_development_purposes_only",
     watchers: [
       esbuild: {Esbuild, :install_and_run, [:aerovision, ~w(--sourcemap=inline --watch)]},
       tailwind: {Tailwind, :install_and_run, [:aerovision, ~w(--watch)]}
@@ -21,7 +20,7 @@ if Mix.target() == :host do
       ]
     ]
 
-  config :phoenix, :plug_init_mode, :runtime
-
   config :aerovision, dev_mode: true
+
+  config :phoenix, :plug_init_mode, :runtime
 end

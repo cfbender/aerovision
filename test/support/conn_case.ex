@@ -8,14 +8,14 @@ defmodule AeroVisionWeb.ConnCase do
 
   using do
     quote do
-      @endpoint AeroVisionWeb.Endpoint
-
       use AeroVisionWeb, :verified_routes
 
-      import Plug.Conn
+      import AeroVisionWeb.ConnCase
       import Phoenix.ConnTest
       import Phoenix.LiveViewTest
-      import AeroVisionWeb.ConnCase
+      import Plug.Conn
+
+      @endpoint AeroVisionWeb.Endpoint
     end
   end
 

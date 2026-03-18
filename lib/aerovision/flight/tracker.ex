@@ -14,11 +14,15 @@ defmodule AeroVision.Flight.Tracker do
   """
 
   use GenServer
-  require Logger
 
   alias AeroVision.Config.Store
+  alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.GeoUtils
   alias AeroVision.Flight.Skylink.FlightStatus
-  alias AeroVision.Flight.{TrackedFlight, FlightInfo, StateVector, GeoUtils}
+  alias AeroVision.Flight.StateVector
+  alias AeroVision.Flight.TrackedFlight
+
+  require Logger
 
   @pubsub AeroVision.PubSub
   @flights_topic "flights"
@@ -111,9 +115,7 @@ defmodule AeroVision.Flight.Tracker do
 
     cached_flights =
       if stored_version < @cache_version do
-        Logger.info(
-          "[Tracker] Cache version #{stored_version} < #{@cache_version} — clearing stale flight data"
-        )
+        Logger.info("[Tracker] Cache version #{stored_version} < #{@cache_version} — clearing stale flight data")
 
         CubDB.put(db, :cache_version, @cache_version)
         CubDB.delete(db, @cache_key)
@@ -278,8 +280,7 @@ defmodule AeroVision.Flight.Tracker do
   end
 
   @impl true
-  def handle_info({:config_changed, key, _value}, state)
-      when key in [:location_lat, :location_lon, :radius_km] do
+  def handle_info({:config_changed, key, _value}, state) when key in [:location_lat, :location_lon, :radius_km] do
     if state.mode == :nearby do
       # Location changed — clear all flights immediately. Old location's planes
       # are irrelevant. The next SkyLink broadcast will repopulate with fresh data.
@@ -339,9 +340,7 @@ defmodule AeroVision.Flight.Tracker do
 
   @impl true
   def handle_info({:config_changed, :airline_filters, value}, state) do
-    new_state =
-      %{state | airline_filters: value}
-      |> merge_cached_enrichment()
+    new_state = merge_cached_enrichment(%{state | airline_filters: value})
 
     CubDB.put(new_state.db, @cache_key, new_state.flights)
     enrich_top_candidates(new_state)
@@ -354,9 +353,7 @@ defmodule AeroVision.Flight.Tracker do
     # Pull cached enrichment data from ETS into state immediately so the
     # airport filter can act on it right now, without waiting for the
     # next Skylink tick.
-    new_state =
-      %{state | airport_filters: value}
-      |> merge_cached_enrichment()
+    new_state = merge_cached_enrichment(%{state | airport_filters: value})
 
     CubDB.put(new_state.db, @cache_key, new_state.flights)
     enrich_top_candidates(new_state)
@@ -378,7 +375,7 @@ defmodule AeroVision.Flight.Tracker do
         # Explicitly-tracked flights are never pruned — the user asked for them
         # permanently, regardless of ADS-B coverage or poll hiccups.
         explicitly_tracked?(callsign, state) or
-          DateTime.compare(tracked.last_seen_at, cutoff) == :gt
+          DateTime.after?(tracked.last_seen_at, cutoff)
       end)
 
     pruned = map_size(state.flights) - map_size(active_flights)
@@ -442,8 +439,7 @@ defmodule AeroVision.Flight.Tracker do
   # telemetry. For existing synthetic entries, refreshes last_seen_at to prevent
   # stale pruning.
   defp inject_missing_tracked(flights, state, now) do
-    state.tracked_flights
-    |> Enum.reduce(flights, fn tracked_entry, acc ->
+    Enum.reduce(state.tracked_flights, flights, fn tracked_entry, acc ->
       match = Enum.find(acc, fn {cs, _} -> callsign_matches?(cs, tracked_entry) end)
 
       case match do
@@ -665,8 +661,7 @@ defmodule AeroVision.Flight.Tracker do
           true
 
         %FlightInfo{origin: origin, destination: destination} ->
-          (airport_codes(origin) ++ airport_codes(destination))
-          |> Enum.any?(fn code -> code in normalized end)
+          Enum.any?(airport_codes(origin) ++ airport_codes(destination), fn code -> code in normalized end)
       end
     end)
   end

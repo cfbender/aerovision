@@ -10,9 +10,11 @@ defmodule AeroVision.Flight.FlightStats do
   caller (typically `Skylink.FlightStatus` GenServer).
   """
 
-  require Logger
+  alias AeroVision.Flight.AirlineCodes
+  alias AeroVision.Flight.Airport
+  alias AeroVision.Flight.FlightInfo
 
-  alias AeroVision.Flight.{FlightInfo, Airport, AirlineCodes}
+  require Logger
 
   @base_url "https://www.flightstats.com/v2/flight-tracker"
 

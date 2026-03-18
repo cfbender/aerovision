@@ -27,15 +27,16 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   """
 
   use GenServer
-  require Logger
 
   alias AeroVision.Config.Store
-  alias AeroVision.Flight.FlightInfo
-  alias AeroVision.Flight.FlightAware
-  alias AeroVision.Flight.FlightStats
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.AirportTimezones
+  alias AeroVision.Flight.FlightAware
+  alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.FlightStats
   alias AeroVision.TimeSync
+
+  require Logger
 
   @pubsub AeroVision.PubSub
   @topic "flights"
@@ -192,7 +193,8 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     # Load valid cache entries into ETS and purge expired ones from CubDB
     now = System.system_time(:second)
 
-    CubDB.select(db)
+    db
+    |> CubDB.select()
     |> Enum.each(fn
       {key, {:not_found, cached_at}} when is_binary(key) ->
         if now - cached_at < @cache_ttl_sec do
@@ -225,7 +227,8 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
       # Clear only string (callsign) keys; preserve system keys like {:calls, month} and :cache_version
       string_keys =
-        CubDB.select(db)
+        db
+        |> CubDB.select()
         |> Enum.filter(fn {key, _} -> is_binary(key) end)
         |> Enum.map(fn {key, _} -> key end)
 
@@ -258,7 +261,8 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     # Clear callsign-keyed entries from CubDB (preserve monthly call counters)
     # Collect all string keys, then delete in one batch operation for better performance
     keys_to_delete =
-      CubDB.select(state.db)
+      state.db
+      |> CubDB.select()
       |> Enum.filter(fn
         {key, _} when is_binary(key) -> true
         _ -> false
@@ -333,11 +337,11 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   end
 
   defp do_fetch(callsign, state) do
-    if not TimeSync.synchronized?() do
+    if TimeSync.synchronized?() do
+      do_fetch_http(callsign, state)
+    else
       Logger.debug("[Skylink.FlightStatus] Clock not synced — deferring #{callsign}")
       %{state | queue: MapSet.put(state.queue, callsign)}
-    else
-      do_fetch_http(callsign, state)
     end
   end
 
@@ -394,9 +398,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   defp do_fetch_skylink(callsign, state) do
     cond do
       not credentials_configured?() ->
-        Logger.warning(
-          "[Skylink.FlightStatus] No API key configured, skipping Skylink enrichment for #{callsign}"
-        )
+        Logger.warning("[Skylink.FlightStatus] No API key configured, skipping Skylink enrichment for #{callsign}")
 
         state
 
@@ -439,11 +441,11 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
             # Reset counter if month rolled over
             current_month = month_key()
 
-            if current_month != new_state.month_key do
+            if current_month == new_state.month_key do
+              %{new_state | call_count: new_count}
+            else
               CubDB.put(new_state.db, {:calls, current_month}, 1)
               %{new_state | call_count: 1, month_key: current_month}
-            else
-              %{new_state | call_count: new_count}
             end
 
           :error ->
@@ -481,46 +483,45 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     arr_tz = AirportTimezones.timezone_for(arr_airport && arr_airport.iata)
 
     info =
-      %FlightInfo{
-        ident: body["flight_number"],
-        operator: nil,
-        airline_name: body["airline"],
-        aircraft_type: nil,
-        origin: dep_airport,
-        destination: arr_airport,
-        departure_time:
-          parse_datetime(
-            get_in(body, ["departure", "scheduled_time"]),
-            get_in(body, ["departure", "scheduled_date"]),
-            dep_tz
-          ),
-        actual_departure_time:
-          parse_datetime(
-            get_in(body, ["departure", "actual_time"]),
-            get_in(body, ["departure", "actual_date"]),
-            dep_tz
-          ),
-        arrival_time:
-          parse_datetime(
-            get_in(body, ["arrival", "scheduled_time"]),
-            get_in(body, ["arrival", "scheduled_date"]),
-            arr_tz
-          ),
-        estimated_departure_time:
-          parse_datetime(
-            get_in(body, ["departure", "estimated_time"]),
-            get_in(body, ["departure", "estimated_date"]),
-            dep_tz
-          ),
-        estimated_arrival_time:
-          parse_datetime(
-            get_in(body, ["arrival", "estimated_time"]),
-            get_in(body, ["arrival", "estimated_date"]),
-            arr_tz
-          ),
-        cached_at: DateTime.utc_now()
-      }
-      |> Map.put(:status, status)
+      Map.put(
+        %FlightInfo{
+          ident: body["flight_number"],
+          operator: nil,
+          airline_name: body["airline"],
+          aircraft_type: nil,
+          origin: dep_airport,
+          destination: arr_airport,
+          departure_time:
+            parse_datetime(
+              get_in(body, ["departure", "scheduled_time"]),
+              get_in(body, ["departure", "scheduled_date"]),
+              dep_tz
+            ),
+          actual_departure_time:
+            parse_datetime(get_in(body, ["departure", "actual_time"]), get_in(body, ["departure", "actual_date"]), dep_tz),
+          arrival_time:
+            parse_datetime(
+              get_in(body, ["arrival", "scheduled_time"]),
+              get_in(body, ["arrival", "scheduled_date"]),
+              arr_tz
+            ),
+          estimated_departure_time:
+            parse_datetime(
+              get_in(body, ["departure", "estimated_time"]),
+              get_in(body, ["departure", "estimated_date"]),
+              dep_tz
+            ),
+          estimated_arrival_time:
+            parse_datetime(
+              get_in(body, ["arrival", "estimated_time"]),
+              get_in(body, ["arrival", "estimated_date"]),
+              arr_tz
+            ),
+          cached_at: DateTime.utc_now()
+        },
+        :status,
+        status
+      )
 
     {:ok, info}
   end
@@ -660,7 +661,8 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
     # Delete callsign entries whose 24h TTL has expired (both positive and negative cache entries)
     expired_keys =
-      CubDB.select(db)
+      db
+      |> CubDB.select()
       |> Stream.filter(fn
         {key, {:not_found, cached_at}} when is_binary(key) -> now - cached_at >= @cache_ttl_sec
         {key, {_info, cached_at}} when is_binary(key) -> now - cached_at >= @cache_ttl_sec
@@ -673,7 +675,8 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     cutoff = Date.add(current, -60)
 
     old_month_keys =
-      CubDB.select(db)
+      db
+      |> CubDB.select()
       |> Stream.filter(fn
         {{:calls, month_str}, _} ->
           case Date.from_iso8601("#{month_str}-01") do

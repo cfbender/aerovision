@@ -1,5 +1,6 @@
 defmodule AeroVision.Flight.GeoUtilsTest do
   use ExUnit.Case, async: true
+
   alias AeroVision.Flight.GeoUtils
 
   # ──────────────────────────────────────────────── haversine_km ──

@@ -24,11 +24,12 @@ defmodule AeroVision.Flight.Skylink.ADSB do
   """
 
   use GenServer
-  require Logger
 
-  alias AeroVision.Flight.StateVector
   alias AeroVision.Config.Store
+  alias AeroVision.Flight.StateVector
   alias AeroVision.TimeSync
+
+  require Logger
 
   @pubsub AeroVision.PubSub
   @topic "flights"
@@ -101,8 +102,7 @@ defmodule AeroVision.Flight.Skylink.ADSB do
   # fresh fetch in 500ms. If lat, lon, and radius all change in quick succession
   # (three separate config_changed messages), only one HTTP request fires.
   @impl true
-  def handle_info({:config_changed, key, _value}, state)
-      when key in [:location_lat, :location_lon, :radius_km] do
+  def handle_info({:config_changed, key, _value}, state) when key in [:location_lat, :location_lon, :radius_km] do
     Logger.info("[Skylink.ADSB] Location changed, scheduling re-poll")
     new_state = cancel_poll_timer(state)
     timer = Process.send_after(self(), :poll, 500)
@@ -127,8 +127,7 @@ defmodule AeroVision.Flight.Skylink.ADSB do
 
   # When OpenSky credentials change, our fallback status for nearby mode may
   # have changed — re-evaluate immediately.
-  def handle_info({:config_changed, key, _value}, state)
-      when key in [:opensky_client_id, :opensky_client_secret] do
+  def handle_info({:config_changed, key, _value}, state) when key in [:opensky_client_id, :opensky_client_secret] do
     Logger.debug("[Skylink.ADSB] OpenSky credentials changed, re-evaluating polling")
     new_state = cancel_poll_timer(state)
     timer = Process.send_after(self(), :poll, 500)
@@ -146,16 +145,16 @@ defmodule AeroVision.Flight.Skylink.ADSB do
   # ─────────────────────────────────────────────────────────── fetch logic ──
 
   defp do_fetch(state) do
-    if not TimeSync.synchronized?() do
-      Logger.debug("[Skylink.ADSB] Clock not synced — deferring poll")
-      schedule_poll(state)
-      state
-    else
+    if TimeSync.synchronized?() do
       if should_poll?(state) do
         fetch_aircraft(state)
       else
         state
       end
+    else
+      Logger.debug("[Skylink.ADSB] Clock not synced — deferring poll")
+      schedule_poll(state)
+      state
     end
   end
 
@@ -236,8 +235,7 @@ defmodule AeroVision.Flight.Skylink.ADSB do
   defp parse_aircraft(_), do: []
 
   defp dedup_by_icao24(vectors) do
-    vectors
-    |> Enum.uniq_by(& &1.icao24)
+    Enum.uniq_by(vectors, & &1.icao24)
   end
 
   # ─────────────────────────────────────────────────────────── scheduling ──

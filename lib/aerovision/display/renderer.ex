@@ -15,12 +15,14 @@ defmodule AeroVision.Display.Renderer do
   """
 
   use GenServer
-  require Logger
 
   alias AeroVision.Config.Store
   alias AeroVision.Display.Driver
   alias AeroVision.Flight.AircraftCodes
+  alias AeroVision.Flight.DelayUtils
   alias AeroVision.Network.Manager, as: NetworkManager
+
+  require Logger
 
   @pubsub AeroVision.PubSub
   @default_cycle_seconds 8
@@ -99,7 +101,7 @@ defmodule AeroVision.Display.Renderer do
           state
 
         flights == [] ->
-          cancel_cycle_timer(state) |> Map.put(:mode, :loading) |> Map.put(:current_index, 0)
+          state |> cancel_cycle_timer() |> Map.put(:mode, :loading) |> Map.put(:current_index, 0)
 
         true ->
           state
@@ -275,8 +277,7 @@ defmodule AeroVision.Display.Renderer do
 
   defp build_command(%{mode: :ap}), do: %{cmd: "ap_screen", ssid: @ap_ssid, ip: @ap_ip}
 
-  defp build_command(%{mode: :connecting, connecting_ssid: ssid}),
-    do: %{cmd: "connecting_screen", ssid: ssid || "WiFi"}
+  defp build_command(%{mode: :connecting, connecting_ssid: ssid}), do: %{cmd: "connecting_screen", ssid: ssid || "WiFi"}
 
   defp build_command(%{mode: :disconnected}), do: %{cmd: "wifi_error"}
 
@@ -287,8 +288,7 @@ defmodule AeroVision.Display.Renderer do
     %{cmd: "qr", data: url}
   end
 
-  defp build_command(%{mode: :flights, flights: [], current_index: _}),
-    do: build_command(%{mode: :loading})
+  defp build_command(%{mode: :flights, flights: [], current_index: _}), do: build_command(%{mode: :loading})
 
   defp build_command(%{mode: :flights, flights: flights, current_index: index}) do
     flight = Enum.at(flights, index)
@@ -304,6 +304,14 @@ defmodule AeroVision.Display.Renderer do
   defp build_flight_card(%{state_vector: sv, flight_info: fi}) do
     timezone = Store.get(:timezone)
 
+    dep_delay =
+      DelayUtils.compute_delay(
+        fi && (fi.actual_departure_time || fi.estimated_departure_time),
+        fi && fi.departure_time
+      )
+
+    arr_delay = DelayUtils.compute_delay(fi && best_arrival_time(fi), fi && fi.arrival_time)
+
     %{
       cmd: "flight_card",
       airline: airline_name(fi),
@@ -312,12 +320,14 @@ defmodule AeroVision.Display.Renderer do
       aircraft: aircraft_type(fi, sv),
       route_origin: airport_code(fi && fi.origin),
       route_dest: airport_code(fi && fi.destination),
-      altitude_ft: sv.baro_altitude |> safe_round(),
-      speed_kt: sv.velocity |> safe_round(),
-      bearing_deg: sv.true_track |> safe_round(),
-      vrate_fpm: sv.vertical_rate |> safe_round(),
+      altitude_ft: safe_round(sv.baro_altitude),
+      speed_kt: safe_round(sv.velocity),
+      bearing_deg: safe_round(sv.true_track),
+      vrate_fpm: safe_round(sv.vertical_rate),
       dep_time: format_time(best_departure_time(fi), timezone),
       arr_time: format_time(best_arrival_time(fi), timezone),
+      dep_time_color: DelayUtils.delay_rgb(dep_delay),
+      arr_time_color: DelayUtils.delay_rgb(arr_delay),
       progress: (fi && fi.progress_pct) || 0.0,
       airline_color: [0, 200, 220]
     }
@@ -333,8 +343,7 @@ defmodule AeroVision.Display.Renderer do
 
   defp aircraft_type(nil, sv), do: AircraftCodes.abbreviate(sv.aircraft_type_name) || "---"
 
-  defp aircraft_type(fi, sv),
-    do: fi.aircraft_type || AircraftCodes.abbreviate(sv.aircraft_type_name) || "---"
+  defp aircraft_type(fi, sv), do: fi.aircraft_type || AircraftCodes.abbreviate(sv.aircraft_type_name) || "---"
 
   defp airport_code(nil), do: nil
   defp airport_code(airport), do: airport.iata || airport.icao

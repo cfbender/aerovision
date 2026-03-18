@@ -7,6 +7,7 @@ Mimic.copy(AeroVision.Flight.Skylink.FlightStatus)
 Mimic.copy(AeroVision.Network.Manager)
 Mimic.copy(AeroVision.Display.Driver)
 Mimic.copy(AeroVision.Network.Watchdog)
+Mimic.copy(AeroVision.Flight.Tracker)
 
 ExUnit.start()
 

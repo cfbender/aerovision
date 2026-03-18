@@ -1,7 +1,9 @@
 defmodule AeroVisionWeb.SettingsLive do
+  @moduledoc false
   use AeroVisionWeb, :live_view
 
   alias AeroVision.Config.Store
+  alias AeroVision.Network.Manager
 
   @impl true
   def mount(_params, _session, socket) do
@@ -15,8 +17,8 @@ defmodule AeroVisionWeb.SettingsLive do
 
     config = Store.all()
 
-    network_mode = AeroVision.Network.Manager.current_mode()
-    ip = AeroVision.Network.Manager.current_ip()
+    network_mode = Manager.current_mode()
+    ip = Manager.current_ip()
 
     uptime = format_uptime()
 
@@ -73,7 +75,7 @@ defmodule AeroVisionWeb.SettingsLive do
   end
 
   def handle_info(:wifi_scan_complete, socket) do
-    networks = AeroVision.Network.Manager.scan_networks()
+    networks = Manager.scan_networks()
     {:noreply, assign(socket, wifi_scanning: false, wifi_scan_results: networks)}
   end
 
@@ -250,10 +252,12 @@ defmodule AeroVisionWeb.SettingsLive do
     ssid = String.trim(params["ssid"] || "")
     password = params["password"] || ""
 
-    if ssid != "" do
+    if ssid == "" do
+      {:noreply, socket}
+    else
       Store.put(:wifi_ssid, ssid)
       Store.put(:wifi_password, password)
-      AeroVision.Network.Manager.connect_wifi(ssid, password)
+      Manager.connect_wifi(ssid, password)
 
       {:noreply,
        assign(socket,
@@ -261,8 +265,6 @@ defmodule AeroVisionWeb.SettingsLive do
          wifi_editing: false,
          saved_flash: "wifi"
        )}
-    else
-      {:noreply, socket}
     end
   end
 
@@ -1084,7 +1086,7 @@ defmodule AeroVisionWeb.SettingsLive do
     hours = div(seconds, 3600)
     minutes = div(rem(seconds, 3600), 60)
     secs = rem(seconds, 60)
-    :io_lib.format("~2..0Bh ~2..0Bm ~2..0Bs", [hours, minutes, secs]) |> IO.iodata_to_binary()
+    "~2..0Bh ~2..0Bm ~2..0Bs" |> :io_lib.format([hours, minutes, secs]) |> IO.iodata_to_binary()
   end
 
   defp network_mode_label(:infrastructure), do: "WiFi (connected)"
