@@ -1,13 +1,15 @@
 defmodule AeroVision.Flight.Skylink.FlightStatus do
   @moduledoc """
-  Flight enrichment client with FlightStats scraping as primary source and
-  Skylink Flight Status API as fallback.
+  Flight enrichment client with FlightAware as primary source, FlightStats as
+  secondary, and Skylink Flight Status API as final fallback.
 
   For each callsign, enrichment is attempted in order:
 
-  1. **FlightStats** (`AeroVision.Flight.FlightStats`) — scrapes flightstats.com
-     for enriched data with no API key required and no monthly counter increment.
-  2. **Skylink API** — called only when FlightStats fails, credentials are
+  1. **FlightAware** (`AeroVision.Flight.FlightAware`) — preferred because it
+     provides ICAO aircraft type codes instead of IATA.
+  2. **FlightStats** (`AeroVision.Flight.FlightStats`) — scrapes flightstats.com
+     when FlightAware fails; no API key required and no monthly counter increment.
+  3. **Skylink API** — called only when both free sources fail, credentials are
      configured, and the monthly cap has not been reached.
 
   Fetched data (origin/destination airports, airline name, departure/arrival
@@ -29,6 +31,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
   alias AeroVision.Config.Store
   alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.FlightAware
   alias AeroVision.Flight.FlightStats
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.AirportTimezones
@@ -39,6 +42,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
   @cache_table :aerovision_skylink_cache
   @cache_ttl_sec 86_400
+  @refresh_ttl_sec 1_800
   @rate_limit_ms 1_000
   @persist_table :aerovision_skylink_persist
   @monthly_call_cap 1_000
@@ -105,6 +109,36 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
       _ ->
         nil
     end
+  end
+
+  @doc """
+  Returns true if a callsign's cached enrichment data exists but is older
+  than the refresh TTL. Used by the Tracker to decide when tracked flights
+  need re-enrichment for updated ETAs and status.
+  """
+  def needs_refresh?(callsign) when is_binary(callsign) do
+    now = System.system_time(:second)
+
+    case :ets.lookup(@cache_table, callsign) do
+      [{^callsign, %FlightInfo{}, cached_at}]
+      when now - cached_at >= @refresh_ttl_sec and now - cached_at < @cache_ttl_sec ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  @doc """
+  Force re-enrichment of a callsign by clearing its ETS cache entry and
+  re-queuing it. Used to refresh tracked flights with updated ETAs and status.
+
+  Unlike `enrich/1`, this bypasses the cache check so already-cached callsigns
+  can be re-fetched. The CubDB entry is preserved as crash-recovery fallback.
+  """
+  def re_enrich(callsign) when is_binary(callsign) do
+    GenServer.cast(__MODULE__, {:re_enrich, callsign})
+    :ok
   end
 
   # Check if a callsign has been negatively cached (enrichment permanently failed).
@@ -255,6 +289,15 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   end
 
   @impl true
+  def handle_cast({:re_enrich, callsign}, state) do
+    # Delete the ETS entry so the regular enrich gate passes through.
+    # CubDB entry is preserved as crash-recovery fallback.
+    :ets.delete(@cache_table, callsign)
+    # Now enqueue via the normal path — get_cached will return nil
+    {:noreply, %{state | queue: MapSet.put(state.queue, callsign)}}
+  end
+
+  @impl true
   def handle_info(:tick, state) do
     timer = schedule_tick()
     new_state = process_next(%{state | timer: timer})
@@ -299,6 +342,23 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   end
 
   defp do_fetch_http(callsign, state) do
+    case FlightAware.fetch(callsign) do
+      {:ok, flight_info} ->
+        Logger.debug("[Skylink.FlightStatus] Enriched #{callsign} via FlightAware")
+        new_state = cache_put(callsign, flight_info, state)
+        Phoenix.PubSub.broadcast(@pubsub, @topic, {:flight_enriched, callsign, flight_info})
+        new_state
+
+      {:error, fa_reason} ->
+        Logger.debug(
+          "[Skylink.FlightStatus] FlightAware failed for #{callsign}: #{inspect(fa_reason)}, trying FlightStats"
+        )
+
+        do_fetch_flightstats(callsign, fa_reason, state)
+    end
+  end
+
+  defp do_fetch_flightstats(callsign, fa_reason, state) do
     case FlightStats.fetch(callsign) do
       {:ok, flight_info} ->
         Logger.debug("[Skylink.FlightStatus] Enriched #{callsign} via FlightStats")
@@ -306,16 +366,17 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
         Phoenix.PubSub.broadcast(@pubsub, @topic, {:flight_enriched, callsign, flight_info})
         new_state
 
-      {:error, reason} ->
-        if permanent_failure?(reason) do
+      {:error, fs_reason} ->
+        if permanent_failure?(fa_reason) and permanent_failure?(fs_reason) do
           Logger.debug(
-            "[Skylink.FlightStatus] Permanent failure for #{callsign}: #{inspect(reason)}, negative-caching"
+            "[Skylink.FlightStatus] Both FlightAware and FlightStats permanently failed for #{callsign}: " <>
+              "FA=#{inspect(fa_reason)}, FS=#{inspect(fs_reason)}, negative-caching"
           )
 
           negative_cache_put(callsign, state)
         else
           Logger.debug(
-            "[Skylink.FlightStatus] FlightStats failed for #{callsign}: #{inspect(reason)}, trying Skylink API"
+            "[Skylink.FlightStatus] FlightStats failed for #{callsign}: #{inspect(fs_reason)}, trying Skylink API"
           )
 
           do_fetch_skylink(callsign, state)
@@ -326,6 +387,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   # Errors that indicate the callsign will never enrich successfully — cache negatively.
   defp permanent_failure?(:unknown_callsign), do: true
   defp permanent_failure?(:no_flight_data), do: true
+  defp permanent_failure?(:no_bootstrap_data), do: true
   defp permanent_failure?({:http_status, 404}), do: true
   defp permanent_failure?(_), do: false
 

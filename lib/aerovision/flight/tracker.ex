@@ -34,6 +34,10 @@ defmodule AeroVision.Flight.Tracker do
   # serialized structs (missing new fields) don't crash on access after a deploy.
   @cache_version 2
 
+  @max_display_flights 3
+  # @max_display_flights + 2 buffer — only the closest N flights are enriched in nearby mode
+  @enrich_candidates 5
+
   # ─────────────────────────────────────────────────────────── public API ──
 
   def start_link(opts \\ []) do
@@ -192,11 +196,8 @@ defmodule AeroVision.Flight.Tracker do
           callsign ->
             case Map.get(acc, callsign) do
               nil ->
-                # New flight — request enrichment only if it passes the active filter
-                if should_enrich?(callsign, state) do
-                  FlightStatus.enrich(callsign)
-                end
-
+                # New flight — just store it; enrich_top_candidates/1 will
+                # selectively request enrichment after the reduce completes.
                 tracked = %TrackedFlight{
                   state_vector: sv,
                   flight_info: FlightStatus.get_cached(callsign),
@@ -231,6 +232,7 @@ defmodule AeroVision.Flight.Tracker do
 
     new_state = %{state | flights: new_flights}
     CubDB.put(new_state.db, @cache_key, new_flights)
+    enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -307,7 +309,7 @@ defmodule AeroVision.Flight.Tracker do
   @impl true
   def handle_info({:config_changed, :display_mode, value}, state) do
     new_state = %{state | mode: value}
-    request_missing_enrichment(new_state)
+    enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -330,7 +332,7 @@ defmodule AeroVision.Flight.Tracker do
         new_state
       end
 
-    request_missing_enrichment(new_state)
+    enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -342,6 +344,7 @@ defmodule AeroVision.Flight.Tracker do
       |> merge_cached_enrichment()
 
     CubDB.put(new_state.db, @cache_key, new_state.flights)
+    enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -356,6 +359,7 @@ defmodule AeroVision.Flight.Tracker do
       |> merge_cached_enrichment()
 
     CubDB.put(new_state.db, @cache_key, new_state.flights)
+    enrich_top_candidates(new_state)
     broadcast_display(new_state)
     {:noreply, new_state}
   end
@@ -419,11 +423,7 @@ defmodule AeroVision.Flight.Tracker do
           true ->
             case FlightStatus.get_cached(callsign) do
               nil ->
-                # Not in cache — queue enrichment for later
-                if should_enrich?(callsign, state) do
-                  FlightStatus.enrich(callsign)
-                end
-
+                # Not in cache — enrich_top_candidates/1 will handle requests
                 {callsign, tracked}
 
               %FlightInfo{} = info ->
@@ -490,6 +490,70 @@ defmodule AeroVision.Flight.Tracker do
     end)
   end
 
+  # In tracked mode, re-enrich displayed flights whose enrichment data
+  # is older than the refresh TTL (~30 min). Skips landed/cancelled flights.
+  defp refresh_stale_tracked(%{mode: :tracked, flights: flights, tracked_flights: tracked_list}) do
+    flights
+    |> Map.keys()
+    |> Enum.each(fn callsign ->
+      tracked = Map.get(flights, callsign)
+
+      if tracked && tracked.flight_info &&
+           not terminal_status?(tracked.flight_info.status) &&
+           Enum.any?(tracked_list, &callsign_matches?(callsign, &1)) &&
+           FlightStatus.needs_refresh?(callsign) do
+        Logger.debug("[Tracker] Refreshing stale enrichment for tracked flight #{callsign}")
+        FlightStatus.re_enrich(callsign)
+      end
+    end)
+  end
+
+  # Non-tracked modes don't need periodic refresh.
+  defp refresh_stale_tracked(_state), do: :ok
+
+  # Flights in terminal states don't need periodic refresh.
+  defp terminal_status?("Landed"), do: true
+  defp terminal_status?("Cancelled"), do: true
+  defp terminal_status?(_), do: false
+
+  # In nearby mode, only request enrichment for the closest @enrich_candidates flights.
+  # This prevents enriching dozens of flights when only @max_display_flights are displayed.
+  defp enrich_top_candidates(%{mode: :nearby} = state) do
+    candidates = enrichment_candidates(state)
+
+    Enum.each(candidates, fn tracked ->
+      callsign = tracked.state_vector.callsign
+
+      if callsign && is_nil(tracked.flight_info) do
+        FlightStatus.enrich(callsign)
+      end
+    end)
+  end
+
+  # For tracked mode: enrich missing flights AND refresh stale ones.
+  defp enrich_top_candidates(state) do
+    request_missing_enrichment(state)
+    refresh_stale_tracked(state)
+  end
+
+  # Select the top @enrich_candidates closest flights as enrichment candidates.
+  # Uses the same distance-based sorting as display selection.
+  # Applies airline_filters (same as display) but NOT airport_filters — because
+  # airport data requires enrichment to be available.
+  defp enrichment_candidates(%{
+         mode: :nearby,
+         airline_filters: airline_filters,
+         flights: flights,
+         location_lat: lat,
+         location_lon: lon
+       }) do
+    flights
+    |> Map.values()
+    |> filter_by_airline(airline_filters)
+    |> sort_by_distance(lat, lon)
+    |> Enum.take(@enrich_candidates)
+  end
+
   defp should_enrich?(callsign, %{mode: :tracked, tracked_flights: tracked_list}) do
     Enum.any?(tracked_list, &callsign_matches?(callsign, &1))
   end
@@ -505,8 +569,6 @@ defmodule AeroVision.Flight.Tracker do
   end
 
   defp should_enrich?(_callsign, _state), do: true
-
-  @max_display_flights 3
 
   # ───────────────────────────────────────────────────────── filter logic ──
 
@@ -540,11 +602,10 @@ defmodule AeroVision.Flight.Tracker do
     flights |> Map.values() |> top_flights()
   end
 
-  # Sort by distance from user location (closest first).
-  # Flights without position data sort last.
-  defp top_flights(flights, lat, lon) when is_number(lat) and is_number(lon) do
-    flights
-    |> Enum.sort_by(fn tracked ->
+  # Sort flights by distance from user location (closest first).
+  # Flights without position data sort last. Enriched flights break ties.
+  defp sort_by_distance(flights, lat, lon) when is_number(lat) and is_number(lon) do
+    Enum.sort_by(flights, fn tracked ->
       sv = tracked.state_vector
 
       distance =
@@ -557,20 +618,27 @@ defmodule AeroVision.Flight.Tracker do
       enriched = if tracked.flight_info, do: 0, else: 1
       {distance, enriched}
     end)
-    |> Enum.take(@max_display_flights)
   end
 
-  # Fallback when location is not available — use recency-based sort.
-  defp top_flights(flights, _lat, _lon), do: top_flights(flights)
-
-  # Sort for tracked mode: enriched flights first, then by most recently seen.
-  defp top_flights(flights) do
-    flights
-    |> Enum.sort_by(fn tracked ->
+  # Fallback when location is not available — sort by recency.
+  defp sort_by_distance(flights, _lat, _lon) do
+    Enum.sort_by(flights, fn tracked ->
       enriched = if tracked.flight_info, do: 0, else: 1
       last_seen = DateTime.to_unix(tracked.last_seen_at)
       {enriched, -last_seen}
     end)
+  end
+
+  defp top_flights(flights, lat, lon) do
+    flights
+    |> sort_by_distance(lat, lon)
+    |> Enum.take(@max_display_flights)
+  end
+
+  # Sort for tracked mode: enriched flights first, then by most recently seen.
+  defp top_flights(flights) do
+    flights
+    |> sort_by_distance(nil, nil)
     |> Enum.take(@max_display_flights)
   end
 

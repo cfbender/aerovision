@@ -91,9 +91,11 @@ defmodule AeroVision.Flight.TrackerTest do
     File.mkdir_p!(tmp_dir)
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
-    # Stub FlightStatus.enrich (private to this test process) so no HTTP happens.
+    # Stub FlightStatus functions (private to this test process) so no HTTP happens.
     # Tests inject enrichment results directly via broadcast_enriched/2.
     stub(AeroVision.Flight.Skylink.FlightStatus, :enrich, fn _callsign -> :ok end)
+    stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> false end)
+    stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn _callsign -> :ok end)
 
     # Ensure the ETS cache table exists for FlightStatus.get_cached/1.
     cache_table = :aerovision_skylink_cache
@@ -106,7 +108,7 @@ defmodule AeroVision.Flight.TrackerTest do
         :ets.delete_all_objects(cache_table)
     end
 
-    # Extend the FlightStatus stub to the Tracker process after it starts.
+    # Extend the FlightStatus stubs to the Tracker process after it starts.
     start_supervised!({Tracker, data_dir: tmp_dir})
     tracker_pid = GenServer.whereis(Tracker)
     allow(AeroVision.Flight.Skylink.FlightStatus, self(), tracker_pid)
@@ -753,6 +755,338 @@ defmodule AeroVision.Flight.TrackerTest do
     broadcast_config(:airport_filters, ["RDU"])
     assert_receive {:display_flights, _}
     assert Process.alive?(GenServer.whereis(Tracker))
+  end
+
+  # ── enrichment candidate limiting ─────────────────────────────────────────
+
+  describe "enrich_top_candidates" do
+    # User location: 35.0°N, -80.0°W
+    # Distances (approximate):
+    #   FL001 at (35.01, -80.0)  →  ~1 km   (closest)
+    #   FL002 at (35.05, -80.0)  →  ~6 km
+    #   FL003 at (35.10, -80.0)  →  ~11 km
+    #   FL004 at (35.20, -80.0)  →  ~22 km
+    #   FL005 at (35.30, -80.0)  →  ~33 km
+    #   FL006 at (35.50, -80.0)  →  ~55 km  (outside top-5)
+    #   FL007 at (35.70, -80.0)  →  ~78 km  (outside top-5)
+    #   FL008 at (36.00, -80.0)  →  ~111 km (outside top-5)
+    @enrich_lat 35.0
+    @enrich_lon -80.0
+
+    setup do
+      pid = GenServer.whereis(Tracker)
+
+      :sys.replace_state(pid, fn state ->
+        %{state | location_lat: @enrich_lat, location_lon: @enrich_lon}
+      end)
+
+      flush_mailbox()
+      :ok
+    end
+
+    test "in nearby mode, only top 5 closest flights get enrichment requests" do
+      # 8 flights at distinct distances — only the 5 closest should be enriched
+      vectors = [
+        sv("FL001", lat: 35.01, lon: -80.0),
+        sv("FL002", lat: 35.05, lon: -80.0),
+        sv("FL003", lat: 35.10, lon: -80.0),
+        sv("FL004", lat: 35.20, lon: -80.0),
+        sv("FL005", lat: 35.30, lon: -80.0),
+        sv("FL006", lat: 35.50, lon: -80.0),
+        sv("FL007", lat: 35.70, lon: -80.0),
+        sv("FL008", lat: 36.00, lon: -80.0)
+      ]
+
+      # Track which callsigns had enrich called
+      test_pid = self()
+
+      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 5, fn callsign ->
+        send(test_pid, {:enrich_called, callsign})
+        :ok
+      end)
+
+      broadcast_raw(vectors)
+      assert_receive {:display_flights, _}
+
+      enriched =
+        for _ <- 1..5 do
+          receive do
+            {:enrich_called, cs} -> cs
+          after
+            500 -> flunk("expected 5 enrich calls, received fewer")
+          end
+        end
+
+      # Verify exactly 5 enrich calls and no more
+      refute_receive {:enrich_called, _}, 100
+
+      # The 5 closest flights must have been enriched
+      assert "FL001" in enriched
+      assert "FL002" in enriched
+      assert "FL003" in enriched
+      assert "FL004" in enriched
+      assert "FL005" in enriched
+
+      # The 3 farthest must NOT have been enriched
+      refute "FL006" in enriched
+      refute "FL007" in enriched
+      refute "FL008" in enriched
+    end
+
+    test "in nearby mode with airline filters, respects both filter and candidate limit" do
+      # 5 DAL + 5 SWA flights — only the 5 closest DAL flights should be enriched
+      vectors = [
+        sv("DAL001", lat: 35.01, lon: -80.0),
+        sv("DAL002", lat: 35.05, lon: -80.0),
+        sv("DAL003", lat: 35.10, lon: -80.0),
+        sv("SWA001", lat: 35.02, lon: -80.0),
+        sv("SWA002", lat: 35.06, lon: -80.0),
+        sv("SWA003", lat: 35.11, lon: -80.0),
+        sv("DAL004", lat: 35.20, lon: -80.0),
+        sv("DAL005", lat: 35.30, lon: -80.0),
+        sv("SWA004", lat: 35.21, lon: -80.0),
+        sv("SWA005", lat: 35.31, lon: -80.0)
+      ]
+
+      broadcast_config(:airline_filters, ["DAL"])
+      assert_receive {:display_flights, _}
+      flush_mailbox()
+
+      test_pid = self()
+
+      # Only 5 DAL flights exist, all should be enriched (≤ @enrich_candidates limit)
+      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 5, fn callsign ->
+        send(test_pid, {:enrich_called, callsign})
+        :ok
+      end)
+
+      broadcast_raw(vectors)
+      assert_receive {:display_flights, _}
+
+      enriched =
+        for _ <- 1..5 do
+          receive do
+            {:enrich_called, cs} -> cs
+          after
+            500 -> flunk("expected 5 DAL enrich calls")
+          end
+        end
+
+      # No more enrich calls
+      refute_receive {:enrich_called, _}, 100
+
+      # All enriched callsigns must be DAL (airline filter respected)
+      assert Enum.all?(enriched, &String.starts_with?(&1, "DAL"))
+
+      # No SWA flights enriched
+      refute Enum.any?(enriched, &String.starts_with?(&1, "SWA"))
+    end
+
+    test "in tracked mode, all tracked callsigns get enriched regardless of distance" do
+      broadcast_config(:display_mode, :tracked)
+      assert_receive {:display_flights, _}
+      broadcast_config(:tracked_flights, ["AAL1234", "DAL567", "UAL890"])
+      assert_receive {:display_flights, _}
+      flush_mailbox()
+
+      test_pid = self()
+
+      # In tracked mode, request_missing_enrichment is used — all 3 unenriched
+      # tracked callsigns should get enrichment calls
+      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 3, fn callsign ->
+        send(test_pid, {:enrich_called, callsign})
+        :ok
+      end)
+
+      # Tracked flights far apart — distance should not matter
+      vectors = [
+        sv("AAL1234", lat: 35.01, lon: -80.0),
+        sv("DAL567", lat: 40.0, lon: -100.0),
+        sv("UAL890", lat: 50.0, lon: -120.0)
+      ]
+
+      broadcast_raw(vectors)
+      assert_receive {:display_flights, _}
+
+      enriched =
+        for _ <- 1..3 do
+          receive do
+            {:enrich_called, cs} -> cs
+          after
+            500 -> flunk("expected 3 enrich calls in tracked mode")
+          end
+        end
+
+      refute_receive {:enrich_called, _}, 100
+
+      assert "AAL1234" in enriched
+      assert "DAL567" in enriched
+      assert "UAL890" in enriched
+    end
+
+    test "config change to airline_filters re-evaluates enrichment candidates" do
+      # Seed 7 flights, no filters yet — first 5 closest get enriched
+      vectors = [
+        sv("FL001", lat: 35.01, lon: -80.0),
+        sv("FL002", lat: 35.05, lon: -80.0),
+        sv("DAL001", lat: 35.03, lon: -80.0),
+        sv("DAL002", lat: 35.07, lon: -80.0),
+        sv("DAL003", lat: 35.15, lon: -80.0),
+        sv("FL006", lat: 35.50, lon: -80.0),
+        sv("FL007", lat: 35.70, lon: -80.0)
+      ]
+
+      # Use a stub (not expect) to avoid counting during initial seed
+      stub(AeroVision.Flight.Skylink.FlightStatus, :enrich, fn _callsign -> :ok end)
+
+      broadcast_raw(vectors)
+      assert_receive {:display_flights, _}
+      flush_mailbox()
+
+      test_pid = self()
+
+      # After switching to DAL filter, only DAL flights (all 3 are within top-5
+      # by distance after filter) should get enrichment
+      expect(AeroVision.Flight.Skylink.FlightStatus, :enrich, 3, fn callsign ->
+        send(test_pid, {:enrich_called, callsign})
+        :ok
+      end)
+
+      broadcast_config(:airline_filters, ["DAL"])
+      assert_receive {:display_flights, _}
+
+      enriched =
+        for _ <- 1..3 do
+          receive do
+            {:enrich_called, cs} -> cs
+          after
+            500 -> flunk("expected 3 DAL enrich calls after filter change")
+          end
+        end
+
+      refute_receive {:enrich_called, _}, 100
+
+      assert Enum.all?(enriched, &String.starts_with?(&1, "DAL"))
+    end
+  end
+
+  # ── tracked mode: stale flight refresh ────────────────────────────────────
+
+  describe "refresh_stale_tracked" do
+    test "in tracked mode, stale En Route flights get re-enrichment requests" do
+      broadcast_config(:display_mode, :tracked)
+      assert_receive {:display_flights, _}
+      broadcast_config(:tracked_flights, ["AAL1234"])
+      assert_receive {:display_flights, _}
+
+      # Send raw flight so it appears in state
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      # Inject enrichment so flight_info is non-nil with an En Route status
+      broadcast_enriched("AAL1234", %{fi(ident: "AAL1234") | status: "En Route"})
+      assert_receive {:display_flights, _}
+      flush_mailbox()
+
+      test_pid = self()
+
+      # Override: needs_refresh? returns true for AAL1234
+      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+
+      expect(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, 1, fn callsign ->
+        send(test_pid, {:re_enrich_called, callsign})
+        :ok
+      end)
+
+      # Trigger another ADS-B tick — this calls enrich_top_candidates which
+      # calls refresh_stale_tracked → re_enrich for the stale tracked flight
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      assert_receive {:re_enrich_called, "AAL1234"}, 500
+    end
+
+    test "in tracked mode, Landed flights do NOT get re-enrichment" do
+      broadcast_config(:display_mode, :tracked)
+      assert_receive {:display_flights, _}
+      broadcast_config(:tracked_flights, ["AAL1234"])
+      assert_receive {:display_flights, _}
+
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      # Enrich with a terminal "Landed" status
+      broadcast_enriched("AAL1234", %{fi(ident: "AAL1234") | status: "Landed"})
+      assert_receive {:display_flights, _}
+      flush_mailbox()
+
+      # needs_refresh? returns true but status is terminal — should NOT call re_enrich
+      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+
+      test_pid = self()
+
+      stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn callsign ->
+        send(test_pid, {:re_enrich_called, callsign})
+        :ok
+      end)
+
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      refute_receive {:re_enrich_called, _}, 100
+    end
+
+    test "in tracked mode, Cancelled flights do NOT get re-enrichment" do
+      broadcast_config(:display_mode, :tracked)
+      assert_receive {:display_flights, _}
+      broadcast_config(:tracked_flights, ["AAL1234"])
+      assert_receive {:display_flights, _}
+
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      broadcast_enriched("AAL1234", %{fi(ident: "AAL1234") | status: "Cancelled"})
+      assert_receive {:display_flights, _}
+      flush_mailbox()
+
+      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+
+      test_pid = self()
+
+      stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn callsign ->
+        send(test_pid, {:re_enrich_called, callsign})
+        :ok
+      end)
+
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      refute_receive {:re_enrich_called, _}, 100
+    end
+
+    test "in nearby mode, stale flights do NOT get re-enrichment" do
+      # Default mode is :nearby — no display_mode config broadcast needed
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      broadcast_enriched("AAL1234", %{fi(ident: "AAL1234") | status: "En Route"})
+      assert_receive {:display_flights, _}
+      flush_mailbox()
+
+      stub(AeroVision.Flight.Skylink.FlightStatus, :needs_refresh?, fn _callsign -> true end)
+
+      test_pid = self()
+
+      stub(AeroVision.Flight.Skylink.FlightStatus, :re_enrich, fn callsign ->
+        send(test_pid, {:re_enrich_called, callsign})
+        :ok
+      end)
+
+      broadcast_raw([sv("AAL1234")])
+      assert_receive {:display_flights, _}
+
+      refute_receive {:re_enrich_called, _}, 100
+    end
   end
 
   # ── nearby mode: distance-based sorting ────────────────────────────────────
