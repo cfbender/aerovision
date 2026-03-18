@@ -230,7 +230,7 @@ Preview exactly what the LED panel will show, rendered in your terminal using AN
 
 ### Live Preview in the Browser
 
-When the server is running, visit **[http://localhost:4000/preview](http://localhost:4000/preview)** to see a live 64×64 pixel grid that mirrors exactly what the LED panel is rendering, updated in real time via WebSocket. This also works on the real device at `http://aerovision.local/preview`.
+When the server is running, visit **[http://localhost:4000/preview](http://localhost:4000/preview)** to see a live 64×64 pixel grid that mirrors exactly what the LED panel is rendering, updated in real time via WebSocket.
 
 ---
 

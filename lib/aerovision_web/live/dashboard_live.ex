@@ -39,7 +39,10 @@ defmodule AeroVisionWeb.DashboardLive do
        wizard_wifi_saved: false,
        wizard_connecting: false,
        wizard_scan_results: [],
-       wizard_scanning: false
+       wizard_scanning: false,
+       wizard_skylink_api_key: config.skylink_api_key || "",
+       wizard_opensky_client_id: config.opensky_client_id || "",
+       wizard_opensky_client_secret: config.opensky_client_secret || ""
      )}
   end
 
@@ -105,15 +108,13 @@ defmodule AeroVisionWeb.DashboardLive do
       AeroVision.Config.Store.put(:skylink_api_key, skylink_api_key)
     end
 
-    AeroVision.Config.Store.put(
-      :opensky_client_id,
-      if(opensky_id == "", do: nil, else: opensky_id)
-    )
+    if opensky_id != "" do
+      AeroVision.Config.Store.put(:opensky_client_id, opensky_id)
+    end
 
-    AeroVision.Config.Store.put(
-      :opensky_client_secret,
-      if(opensky_secret == "", do: nil, else: opensky_secret)
-    )
+    if opensky_secret != "" do
+      AeroVision.Config.Store.put(:opensky_client_secret, opensky_secret)
+    end
 
     AeroVision.Config.Store.put(:api_keys_seen, true)
 
@@ -499,7 +500,7 @@ defmodule AeroVisionWeb.DashboardLive do
                   <input
                     type="text"
                     name="api_keys[opensky_client_id]"
-                    value=""
+                    value={@wizard_opensky_client_id}
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                     placeholder="username"
                     autocomplete="off"
@@ -517,7 +518,7 @@ defmodule AeroVisionWeb.DashboardLive do
                   <input
                     type="password"
                     name="api_keys[opensky_client_secret]"
-                    value=""
+                    value={@wizard_opensky_client_secret}
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                     placeholder="••••••••"
                     autocomplete="off"
@@ -551,7 +552,7 @@ defmodule AeroVisionWeb.DashboardLive do
                 <input
                   type="password"
                   name="api_keys[skylink_api_key]"
-                  value=""
+                  value={@wizard_skylink_api_key}
                   class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                   placeholder="Your RapidAPI key"
                   autocomplete="off"
@@ -785,13 +786,18 @@ defmodule AeroVisionWeb.DashboardLive do
     if @on_target do
       cond do
         is_nil(config.wifi_ssid) or config.wifi_ssid == "" -> :wifi
-        not config.api_keys_seen -> :api_keys
+        not has_any_api_keys?(config) -> :api_keys
         config.location_lat == 35.7721 and config.location_lon == -78.63861 -> :location
         true -> :done
       end
     else
       :done
     end
+  end
+
+  defp has_any_api_keys?(config) do
+    (is_binary(config.skylink_api_key) and config.skylink_api_key != "") or
+      (is_binary(config.opensky_client_id) and config.opensky_client_id != "")
   end
 
   defp parse_float(s) when is_binary(s) do

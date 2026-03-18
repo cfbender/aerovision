@@ -8,6 +8,7 @@ erl_crash.dump
 *.ez
 aerovision-*.tar
 /tmp/
+*.coverdata
 
 # Nerves
 /.nerves/
