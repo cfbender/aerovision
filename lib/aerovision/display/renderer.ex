@@ -50,6 +50,9 @@ defmodule AeroVision.Display.Renderer do
     Phoenix.PubSub.subscribe(@pubsub, "network")
     Phoenix.PubSub.subscribe(@pubsub, "gpio")
 
+    # Ask Tracker to re-broadcast so we pick up any cached flights immediately
+    AeroVision.Flight.Tracker.broadcast_now()
+
     cycle_seconds = Store.get(:display_cycle_seconds) || @default_cycle_seconds
 
     # Start in AP mode immediately if we're not on WiFi yet — avoids briefly
