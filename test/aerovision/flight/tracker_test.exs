@@ -754,4 +754,100 @@ defmodule AeroVision.Flight.TrackerTest do
     assert_receive {:display_flights, _}
     assert Process.alive?(GenServer.whereis(Tracker))
   end
+
+  # ── nearby mode: distance-based sorting ────────────────────────────────────
+
+  describe "nearby mode distance sorting" do
+    # User location: 35.0°N, -80.0°W (roughly Charlotte, NC)
+    # Distances from user are unambiguous and well-separated:
+    #   AAL001 at (35.05, -80.05)  → ~6 km  (closest)
+    #   DAL002 at (35.20, -80.00)  → ~22 km
+    #   UAL003 at (35.45, -80.00)  → ~50 km
+    #   SWA004 at (36.00, -80.00)  → ~111 km (farthest)
+    @user_lat 35.0
+    @user_lon -80.0
+
+    setup do
+      Store.put(:location_lat, @user_lat)
+      Store.put(:location_lon, @user_lon)
+
+      # Restart the Tracker so it picks up the pre-seeded location from Store
+      pid = GenServer.whereis(Tracker)
+
+      :sys.replace_state(pid, fn state ->
+        %{state | location_lat: @user_lat, location_lon: @user_lon}
+      end)
+
+      flush_mailbox()
+      :ok
+    end
+
+    test "flights are returned sorted by distance, closest first" do
+      # Send flights out of order (farthest first) to verify sorting
+      vectors = [
+        sv("SWA004", lat: 36.00, lon: -80.0),
+        sv("UAL003", lat: 35.45, lon: -80.0),
+        sv("AAL001", lat: 35.05, lon: -80.05),
+        sv("DAL002", lat: 35.20, lon: -80.0)
+      ]
+
+      broadcast_raw(vectors)
+      assert_receive {:display_flights, flights}
+
+      # Only 3 returned (max_display_flights)
+      assert length(flights) == 3
+
+      callsigns = Enum.map(flights, & &1.state_vector.callsign)
+      # Closest three: AAL001 (~6km), DAL002 (~22km), UAL003 (~50km)
+      assert callsigns == ["AAL001", "DAL002", "UAL003"]
+      # Farthest (SWA004 ~111km) must not be in results
+      refute "SWA004" in callsigns
+    end
+
+    test "flight with no position data sorts after positioned flights" do
+      vectors = [
+        sv("UAL003", lat: 35.45, lon: -80.0),
+        # No lat/lon — should sort last
+        sv("NOPOS1", lat: nil, lon: nil),
+        sv("AAL001", lat: 35.05, lon: -80.05)
+      ]
+
+      broadcast_raw(vectors)
+      assert_receive {:display_flights, flights}
+
+      assert length(flights) == 3
+      callsigns = Enum.map(flights, & &1.state_vector.callsign)
+      # Positioned flights come before the no-position flight
+      assert List.last(callsigns) == "NOPOS1"
+    end
+
+    test "location change refreshes stored lat/lon and clears flights" do
+      broadcast_raw([sv("AAL001", lat: 35.05, lon: -80.05)])
+      assert_receive {:display_flights, [_]}
+
+      # Change location — flights should be cleared and new coords stored
+      Store.put(:location_lat, 40.0)
+      broadcast_config(:location_lat, 40.0)
+      assert_receive {:display_flights, []}
+
+      pid = GenServer.whereis(Tracker)
+      state = :sys.get_state(pid)
+      assert state.location_lat == 40.0
+    end
+
+    test "when location is nil, falls back to recency-based sort without crash" do
+      pid = GenServer.whereis(Tracker)
+
+      :sys.replace_state(pid, fn state ->
+        %{state | location_lat: nil, location_lon: nil}
+      end)
+
+      flush_mailbox()
+
+      broadcast_raw([sv("AAL001", lat: 35.05, lon: -80.05), sv("DAL002", lat: 35.20, lon: -80.0)])
+      assert_receive {:display_flights, flights}
+      # Both flights returned (no crash), sorted by recency
+      assert length(flights) == 2
+    end
+  end
 end

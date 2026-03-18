@@ -65,4 +65,41 @@ defmodule AeroVision.Flight.Skylink.FlightStatusTest do
     :sys.get_state(pid)
     assert Process.alive?(pid)
   end
+
+  test "negatively cached callsigns are not re-queued" do
+    # Insert a negative cache entry directly
+    now = System.system_time(:second)
+    :ets.insert(@cache_table, {"UNKNOWN123", :not_found, now})
+
+    # Try to enrich — should be silently skipped
+    assert FlightStatus.enrich("UNKNOWN123") == :ok
+
+    # Verify it's not in the queue by checking state
+    state = :sys.get_state(FlightStatus)
+    refute MapSet.member?(state.queue, "UNKNOWN123")
+  end
+
+  test "get_cached/1 returns nil for negatively cached callsigns" do
+    now = System.system_time(:second)
+    :ets.insert(@cache_table, {"NEGTEST", :not_found, now})
+
+    assert FlightStatus.get_cached("NEGTEST") == nil
+  end
+
+  test "clear_cache/0 also clears the processing queue" do
+    # Enqueue something (won't process because no API key)
+    FlightStatus.enrich("QUEUED123")
+    _ = :sys.get_state(FlightStatus)
+
+    # Verify it was queued
+    state = :sys.get_state(FlightStatus)
+    assert MapSet.member?(state.queue, "QUEUED123")
+
+    # Purge cache
+    FlightStatus.clear_cache()
+
+    # Verify queue is now empty
+    state = :sys.get_state(FlightStatus)
+    assert state.queue == MapSet.new()
+  end
 end

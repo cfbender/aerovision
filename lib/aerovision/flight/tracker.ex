@@ -18,7 +18,7 @@ defmodule AeroVision.Flight.Tracker do
 
   alias AeroVision.Config.Store
   alias AeroVision.Flight.Skylink.FlightStatus
-  alias AeroVision.Flight.{TrackedFlight, FlightInfo, StateVector}
+  alias AeroVision.Flight.{TrackedFlight, FlightInfo, StateVector, GeoUtils}
 
   @pubsub AeroVision.PubSub
   @flights_topic "flights"
@@ -131,6 +131,8 @@ defmodule AeroVision.Flight.Tracker do
       tracked_flights: Store.get(:tracked_flights),
       airline_filters: Store.get(:airline_filters),
       airport_filters: Store.get(:airport_filters),
+      location_lat: Store.get(:location_lat),
+      location_lon: Store.get(:location_lon),
       cleanup_timer: nil
     }
 
@@ -280,13 +282,25 @@ defmodule AeroVision.Flight.Tracker do
       # Location changed — clear all flights immediately. Old location's planes
       # are irrelevant. The next SkyLink broadcast will repopulate with fresh data.
       Logger.info("[Tracker] Location changed, clearing flight state")
-      new_state = %{state | flights: %{}}
+
+      new_state = %{
+        state
+        | flights: %{},
+          location_lat: Store.get(:location_lat),
+          location_lon: Store.get(:location_lon)
+      }
+
       CubDB.put(new_state.db, @cache_key, %{})
       broadcast_display(new_state)
       {:noreply, new_state}
     else
-      # In tracked mode, location is irrelevant — keep flight state intact
-      {:noreply, state}
+      # In tracked/other modes, keep flight state intact but update stored coords
+      {:noreply,
+       %{
+         state
+         | location_lat: Store.get(:location_lat),
+           location_lon: Store.get(:location_lon)
+       }}
     end
   end
 
@@ -500,13 +514,15 @@ defmodule AeroVision.Flight.Tracker do
          mode: :nearby,
          airline_filters: airline_filters,
          airport_filters: airport_filters,
-         flights: flights
+         flights: flights,
+         location_lat: lat,
+         location_lon: lon
        }) do
     flights
     |> Map.values()
     |> filter_by_airline(airline_filters)
     |> filter_by_airport(airport_filters)
-    |> top_flights()
+    |> top_flights(lat, lon)
   end
 
   defp filtered_flights(%{mode: :tracked, tracked_flights: tracked_list, flights: flights}) do
@@ -524,9 +540,30 @@ defmodule AeroVision.Flight.Tracker do
     flights |> Map.values() |> top_flights()
   end
 
-  # Sort and limit to @max_display_flights.
-  # Enriched flights first (more info = better display card), then by most
-  # recently seen (freshest ADS-B contact at the top).
+  # Sort by distance from user location (closest first).
+  # Flights without position data sort last.
+  defp top_flights(flights, lat, lon) when is_number(lat) and is_number(lon) do
+    flights
+    |> Enum.sort_by(fn tracked ->
+      sv = tracked.state_vector
+
+      distance =
+        if is_number(sv.latitude) and is_number(sv.longitude) do
+          GeoUtils.haversine_km(lat, lon, sv.latitude, sv.longitude)
+        else
+          999_999.0
+        end
+
+      enriched = if tracked.flight_info, do: 0, else: 1
+      {distance, enriched}
+    end)
+    |> Enum.take(@max_display_flights)
+  end
+
+  # Fallback when location is not available — use recency-based sort.
+  defp top_flights(flights, _lat, _lon), do: top_flights(flights)
+
+  # Sort for tracked mode: enriched flights first, then by most recently seen.
   defp top_flights(flights) do
     flights
     |> Enum.sort_by(fn tracked ->

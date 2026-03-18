@@ -118,7 +118,7 @@ defmodule AeroVision.MixProject do
 
       # Utilities
       {:mimic, "~> 2.0", only: :test},
-      {:floki, "~> 0.36"},
+      {:floki, "~> 0.38.0"},
       {:dns_cluster, "~> 0.1"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},

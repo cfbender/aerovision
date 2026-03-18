@@ -1,10 +1,18 @@
 defmodule AeroVision.Flight.Skylink.FlightStatus do
   @moduledoc """
-  Skylink Flight Status API enrichment client.
+  Flight enrichment client with FlightStats scraping as primary source and
+  Skylink Flight Status API as fallback.
 
-  Fetches enriched flight data (origin/destination airports, airline name,
-  departure/arrival times, flight status) for a given callsign and caches
-  results in ETS for 24 hours.
+  For each callsign, enrichment is attempted in order:
+
+  1. **FlightStats** (`AeroVision.Flight.FlightStats`) — scrapes flightstats.com
+     for enriched data with no API key required and no monthly counter increment.
+  2. **Skylink API** — called only when FlightStats fails, credentials are
+     configured, and the monthly cap has not been reached.
+
+  Fetched data (origin/destination airports, airline name, departure/arrival
+  times, flight status) is cached in ETS for 24 hours and persisted to CubDB
+  so it survives reboots.
 
   Incoming enrichment requests are queued and processed at a max rate of
   1 request per second to respect API rate limits.
@@ -12,12 +20,8 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   Broadcasts `{:flight_enriched, callsign, %FlightInfo{}}` on PubSub topic
   "flights" when enrichment completes.
 
-  Cache entries are persisted to CubDB so they survive reboots. Monthly API
-  call counts are also tracked in CubDB to help stay within the free tier
-  (~1,000 calls/month).
-
-  Key advantage over AeroAPI: the Skylink endpoint returns THE current/active
-  flight for a callsign — no multi-occurrence selection needed.
+  Monthly Skylink API call counts are tracked in CubDB to help stay within
+  the free tier (~1,000 calls/month).
   """
 
   use GenServer
@@ -25,6 +29,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
   alias AeroVision.Config.Store
   alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.FlightStats
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.AirportTimezones
   alias AeroVision.TimeSync
@@ -93,11 +98,23 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     now = System.system_time(:second)
 
     case :ets.lookup(@cache_table, callsign) do
-      [{^callsign, flight_info, cached_at}] when now - cached_at < @cache_ttl_sec ->
+      [{^callsign, %FlightInfo{} = flight_info, cached_at}]
+      when now - cached_at < @cache_ttl_sec ->
         if flight_arrived?(flight_info, now), do: nil, else: flight_info
 
       _ ->
         nil
+    end
+  end
+
+  # Check if a callsign has been negatively cached (enrichment permanently failed).
+  # Uses the same ETS table but stores :not_found as the value instead of %FlightInfo{}.
+  defp negatively_cached?(callsign) do
+    now = System.system_time(:second)
+
+    case :ets.lookup(@cache_table, callsign) do
+      [{^callsign, :not_found, cached_at}] when now - cached_at < @cache_ttl_sec -> true
+      _ -> false
     end
   end
 
@@ -143,6 +160,13 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
     CubDB.select(db)
     |> Enum.each(fn
+      {key, {:not_found, cached_at}} when is_binary(key) ->
+        if now - cached_at < @cache_ttl_sec do
+          :ets.insert(@cache_table, {key, :not_found, cached_at})
+        else
+          CubDB.delete(db, key)
+        end
+
       {key, {flight_info, cached_at}} when is_binary(key) ->
         if now - cached_at < @cache_ttl_sec do
           :ets.insert(@cache_table, {key, flight_info, cached_at})
@@ -212,7 +236,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     end
 
     Logger.info("[Skylink.FlightStatus] Cache purged")
-    {:reply, :ok, state}
+    {:reply, :ok, %{state | queue: MapSet.new()}}
   end
 
   @impl true
@@ -222,8 +246,8 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
   @impl true
   def handle_cast({:enrich, callsign}, state) do
-    # Skip if already cached with a valid TTL
-    if get_cached(callsign) do
+    # Skip if already cached (positively or negatively) with a valid TTL
+    if get_cached(callsign) || negatively_cached?(callsign) do
       {:noreply, state}
     else
       {:noreply, %{state | queue: MapSet.put(state.queue, callsign)}}
@@ -257,7 +281,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
         remaining = MapSet.delete(queue, callsign)
         state = %{state | queue: remaining}
 
-        if get_cached(callsign) do
+        if get_cached(callsign) || negatively_cached?(callsign) do
           process_next(state)
         else
           do_fetch(callsign, state)
@@ -266,14 +290,50 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   end
 
   defp do_fetch(callsign, state) do
-    cond do
-      not TimeSync.synchronized?() ->
-        Logger.debug("[Skylink.FlightStatus] Clock not synced — deferring #{callsign}")
-        %{state | queue: MapSet.put(state.queue, callsign)}
+    if not TimeSync.synchronized?() do
+      Logger.debug("[Skylink.FlightStatus] Clock not synced — deferring #{callsign}")
+      %{state | queue: MapSet.put(state.queue, callsign)}
+    else
+      do_fetch_http(callsign, state)
+    end
+  end
 
+  defp do_fetch_http(callsign, state) do
+    case FlightStats.fetch(callsign) do
+      {:ok, flight_info} ->
+        Logger.debug("[Skylink.FlightStatus] Enriched #{callsign} via FlightStats")
+        new_state = cache_put(callsign, flight_info, state)
+        Phoenix.PubSub.broadcast(@pubsub, @topic, {:flight_enriched, callsign, flight_info})
+        new_state
+
+      {:error, reason} ->
+        if permanent_failure?(reason) do
+          Logger.debug(
+            "[Skylink.FlightStatus] Permanent failure for #{callsign}: #{inspect(reason)}, negative-caching"
+          )
+
+          negative_cache_put(callsign, state)
+        else
+          Logger.debug(
+            "[Skylink.FlightStatus] FlightStats failed for #{callsign}: #{inspect(reason)}, trying Skylink API"
+          )
+
+          do_fetch_skylink(callsign, state)
+        end
+    end
+  end
+
+  # Errors that indicate the callsign will never enrich successfully — cache negatively.
+  defp permanent_failure?(:unknown_callsign), do: true
+  defp permanent_failure?(:no_flight_data), do: true
+  defp permanent_failure?({:http_status, 404}), do: true
+  defp permanent_failure?(_), do: false
+
+  defp do_fetch_skylink(callsign, state) do
+    cond do
       not credentials_configured?() ->
         Logger.warning(
-          "[Skylink.FlightStatus] No API key configured, skipping enrichment for #{callsign}"
+          "[Skylink.FlightStatus] No API key configured, skipping Skylink enrichment for #{callsign}"
         )
 
         state
@@ -287,11 +347,11 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
         state
 
       true ->
-        do_fetch_http(callsign, state)
+        do_fetch_skylink_http(callsign, state)
     end
   end
 
-  defp do_fetch_http(callsign, state) do
+  defp do_fetch_skylink_http(callsign, state) do
     key = api_key()
     url = "#{@base_url}/flight_status/#{URI.encode(callsign)}"
 
@@ -331,7 +391,7 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
 
       {:ok, %{status: 404}} ->
         Logger.debug("[Skylink.FlightStatus] Flight not found: #{callsign}")
-        state
+        negative_cache_put(callsign, state)
 
       {:ok, %{status: 429}} ->
         Logger.warning("[Skylink.FlightStatus] Rate limited (429) for #{callsign}")
@@ -504,6 +564,13 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
     state
   end
 
+  defp negative_cache_put(callsign, state) do
+    now = System.system_time(:second)
+    :ets.insert(@cache_table, {callsign, :not_found, now})
+    CubDB.put(state.db, callsign, {:not_found, now})
+    state
+  end
+
   # Returns true when the scheduled arrival time + buffer has already passed,
   # meaning the cache entry should be treated as stale. Since arrival_time is
   # now a correctly-converted UTC DateTime, a simple Unix comparison is enough.
@@ -529,10 +596,11 @@ defmodule AeroVision.Flight.Skylink.FlightStatus do
   defp prune_cache(db) do
     now = System.system_time(:second)
 
-    # Delete callsign entries whose 24h TTL has expired
+    # Delete callsign entries whose 24h TTL has expired (both positive and negative cache entries)
     expired_keys =
       CubDB.select(db)
       |> Stream.filter(fn
+        {key, {:not_found, cached_at}} when is_binary(key) -> now - cached_at >= @cache_ttl_sec
         {key, {_info, cached_at}} when is_binary(key) -> now - cached_at >= @cache_ttl_sec
         _ -> false
       end)

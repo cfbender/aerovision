@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>TK33 - Turkish Airlines TK 33 Flight Tracker</title></head>
+<body>
+<div id="__next"><!-- page content stripped --></div>
+<script>
+__NEXT_DATA__ = {
+  "props": {
+    "isServer": true,
+    "initialState": {
+      "flightTracker": {
+        "flight": {
+          "flightId": 1372642717,
+          "flightNote": {
+            "final": false, "canceled": false, "hasDepartedGate": true,
+            "hasDepartedRunway": true, "landed": false,
+            "tracking": true, "hasPositions": true, "phase": "Cruising"
+          },
+          "isTracking": true, "isLanded": false, "isScheduled": false,
+          "schedule": {
+            "scheduledDeparture": "2026-03-18T14:50:00.000",
+            "scheduledDepartureUTC": "2026-03-18T11:50:00.000Z",
+            "estimatedActualDepartureRunway": false,
+            "estimatedActualDepartureTitle": "Actual",
+            "estimatedActualDeparture": "2026-03-18T14:53:00.000",
+            "estimatedActualDepartureUTC": "2026-03-18T11:53:00.000Z",
+            "scheduledArrival": "2026-03-18T20:10:00.000",
+            "scheduledArrivalUTC": "2026-03-19T01:10:00.000Z",
+            "estimatedActualArrivalRunway": false,
+            "estimatedActualArrivalTitle": "Estimated",
+            "estimatedActualArrival": "2026-03-18T19:49:00.000",
+            "estimatedActualArrivalUTC": "2026-03-19T00:49:00.000Z",
+            "tookOff": "2026-03-18T14:53:00.000"
+          },
+          "status": {
+            "statusCode": "A", "status": "Departed", "color": "green",
+            "statusDescription": "On time",
+            "delay": {"departure": {"minutes": 3}, "arrival": {"minutes": 0}},
+            "delayStatus": {"wording": "On time", "minutes": 0},
+            "diverted": false
+          },
+          "resultHeader": {
+            "statusDescription": "On time",
+            "carrier": {"name": "Turkish Airlines", "fs": "TK"},
+            "flightNumber": "33",
+            "status": "Departed", "diverted": false, "color": "green",
+            "departureAirportFS": "IST", "arrivalAirportFS": "IAH"
+          },
+          "ticketHeader": {
+            "carrier": {"name": "Turkish Airlines", "fs": "TK"},
+            "flightNumber": "33"
+          },
+          "operatedBy": null,
+          "departureAirport": {
+            "fs": "ISL", "iata": "IST",
+            "name": "Istanbul Airport",
+            "city": "Istanbul", "country": "TR",
+            "timeZoneRegionName": "Europe/Istanbul",
+            "gate": "A6", "terminal": null,
+            "times": {
+              "scheduled": {"time": "2:50", "ampm": "PM", "time24": "14:50", "timezone": "+03"},
+              "estimatedActual": {"title": "Actual", "time": "2:53", "ampm": "PM", "time24": "14:53", "timezone": "+03"}
+            },
+            "date": "2026-03-18T14:50:00.000"
+          },
+          "arrivalAirport": {
+            "fs": "IAH", "iata": "IAH",
+            "name": "Houston George Bush Intercontinental Airport",
+            "city": "Houston", "state": "TX", "country": "US",
+            "timeZoneRegionName": "America/Chicago",
+            "gate": null, "terminal": "D", "baggage": null,
+            "times": {
+              "scheduled": {"time": "8:10", "ampm": "PM", "time24": "20:10", "timezone": "CDT"},
+              "estimatedActual": {"title": "Estimated", "time": "7:49", "ampm": "PM", "time24": "19:49", "timezone": "CDT"}
+            },
+            "date": "2026-03-18T20:10:00.000"
+          },
+          "additionalFlightInfo": {
+            "equipment": {"iata": "789", "name": "Boeing 787-9", "title": "Actual"},
+            "flightDuration": "13h 20m"
+          },
+          "codeshares": [
+            {"fs": "6E", "name": "IndiGo", "flightNumber": "4011"},
+            {"fs": "PK", "name": "Pakistan International Airlines", "flightNumber": "5033"}
+          ],
+          "positional": {
+            "departureAirportCode": "IST", "arrivalAirportCode": "IAH",
+            "flexTrack": {
+              "flightId": 1372642717, "carrierFsCode": "TK", "flightNumber": "33",
+              "tailNumber": "TC-LLR", "callsign": "THY5KM",
+              "departureAirportFsCode": "ISL", "arrivalAirportFsCode": "IAH",
+              "equipment": "789", "delayMinutes": 12,
+              "bearing": 299.25, "heading": 308.93,
+              "positions": [
+                {"lon": 9.99, "lat": 56.27, "speedMph": 489, "altitudeFt": 34000, "source": "derived", "date": "2026-03-18T14:41:43.896Z", "course": 299}
+              ]
+            }
+          },
+          "flightState": "en-route"
+        }
+      }
+    },
+    "initialProps": {
+      "pageProps": {
+        "params": {"carrierCode": "TK", "flightNumber": "33"}
+      }
+    }
+  },
+  "page": "/flight-tracker",
+  "query": {"carrierCode": "TK", "flightNumber": "33"}
+}
+</script>
+</body>
+</html>
