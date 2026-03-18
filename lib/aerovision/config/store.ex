@@ -36,7 +36,9 @@ defmodule AeroVision.Config.Store do
     skylink_api_key: nil,
     opensky_client_id: nil,
     opensky_client_secret: nil,
-    api_keys_seen: false
+    api_keys_seen: false,
+    skylink_monthly_count: 0,
+    skylink_month_key: nil
   }
 
   # Keys whose values are atoms (need string→atom conversion on read)

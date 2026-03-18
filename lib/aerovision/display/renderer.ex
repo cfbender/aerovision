@@ -18,8 +18,8 @@ defmodule AeroVision.Display.Renderer do
 
   alias AeroVision.Config.Store
   alias AeroVision.Display.Driver
-  alias AeroVision.Flight.AircraftCodes
-  alias AeroVision.Flight.DelayUtils
+  alias AeroVision.Flight.Utils.AircraftCodes
+  alias AeroVision.Flight.Utils.Delay
   alias AeroVision.Network.Manager, as: NetworkManager
 
   require Logger
@@ -305,12 +305,12 @@ defmodule AeroVision.Display.Renderer do
     timezone = Store.get(:timezone)
 
     dep_delay =
-      DelayUtils.compute_delay(
+      Delay.compute_delay(
         fi && (fi.actual_departure_time || fi.estimated_departure_time),
         fi && fi.departure_time
       )
 
-    arr_delay = DelayUtils.compute_delay(fi && best_arrival_time(fi), fi && fi.arrival_time)
+    arr_delay = Delay.compute_delay(fi && best_arrival_time(fi), fi && fi.arrival_time)
 
     %{
       cmd: "flight_card",
@@ -326,8 +326,8 @@ defmodule AeroVision.Display.Renderer do
       vrate_fpm: safe_round(sv.vertical_rate),
       dep_time: format_time(best_departure_time(fi), timezone),
       arr_time: format_time(best_arrival_time(fi), timezone),
-      dep_time_color: DelayUtils.delay_rgb(dep_delay),
-      arr_time_color: DelayUtils.delay_rgb(arr_delay),
+      dep_time_color: Delay.delay_rgb(dep_delay),
+      arr_time_color: Delay.delay_rgb(arr_delay),
       progress: (fi && fi.progress_pct) || 0.0,
       airline_color: [0, 200, 220]
     }

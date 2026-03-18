@@ -3,7 +3,7 @@ defmodule AeroVision.FlightSupervisor do
   Supervisor for the flight data pipeline.
 
   Manages all flight data source processes under a `one_for_one` strategy,
-  meaning each source (Skylink FlightStatus, Skylink ADSB, OpenSky, Tracker)
+  meaning each source (FlightStatus, Skylink ADSB, OpenSky, Tracker)
   is independent — a crash in one does not restart the others.
 
   This subtree is intentionally isolated from the hardware and web subtrees so
@@ -19,9 +19,9 @@ defmodule AeroVision.FlightSupervisor do
   @impl true
   def init(_init_arg) do
     children = [
-      AeroVision.Flight.Skylink.FlightStatus,
-      AeroVision.Flight.Skylink.ADSB,
-      AeroVision.Flight.OpenSky,
+      AeroVision.Flight.FlightStatus,
+      AeroVision.Flight.Providers.Skylink.ADSB,
+      AeroVision.Flight.Providers.OpenSky,
       AeroVision.Flight.Tracker
     ]
 

@@ -1,5 +1,5 @@
 defmodule AeroVision.Flight.FlightInfo do
-  @moduledoc "Enriched flight information from Skylink Flight Status API."
+  @moduledoc "Enriched flight information returned by flight data providers."
 
   defstruct [
     # String - flight identifier (e.g., "AAL1234")

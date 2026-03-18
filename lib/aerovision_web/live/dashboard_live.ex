@@ -4,9 +4,9 @@ defmodule AeroVisionWeb.DashboardLive do
 
   alias AeroVision.Config.Store
   alias AeroVision.Display.Renderer
-  alias AeroVision.Flight.AircraftCodes
-  alias AeroVision.Flight.DelayUtils
   alias AeroVision.Flight.Tracker
+  alias AeroVision.Flight.Utils.AircraftCodes
+  alias AeroVision.Flight.Utils.Delay
   alias AeroVision.Network.Manager
 
   @impl true
@@ -235,7 +235,7 @@ defmodule AeroVisionWeb.DashboardLive do
   end
 
   def handle_event("refresh_flight", %{"callsign" => callsign}, socket) do
-    AeroVision.Flight.Skylink.FlightStatus.re_enrich(callsign)
+    AeroVision.Flight.FlightStatus.re_enrich(callsign)
     {:noreply, update(socket, :refreshing, &MapSet.put(&1, callsign))}
   end
 
@@ -723,11 +723,11 @@ defmodule AeroVisionWeb.DashboardLive do
         dep_time: Renderer.format_time(Renderer.best_departure_time(fi), timezone),
         arr_time: Renderer.format_time(Renderer.best_arrival_time(fi), timezone),
         dep_delay_min:
-          DelayUtils.compute_delay(
+          Delay.compute_delay(
             fi && (fi.actual_departure_time || fi.estimated_departure_time),
             fi && fi.departure_time
           ),
-        arr_delay_min: DelayUtils.compute_delay(fi && Renderer.best_arrival_time(fi), fi && fi.arrival_time),
+        arr_delay_min: Delay.compute_delay(fi && Renderer.best_arrival_time(fi), fi && fi.arrival_time),
         progress: (fi && fi.progress_pct) || 0.0,
         on_ground: sv.on_ground || false
       )
@@ -763,12 +763,12 @@ defmodule AeroVisionWeb.DashboardLive do
       <div class="flex items-center gap-2 text-sm">
         <div>
           <div class="font-mono text-white font-medium">{@origin}</div>
-          <div class={["font-mono text-xs", DelayUtils.delay_color(@dep_delay_min)]}>{@dep_time}</div>
+          <div class={["font-mono text-xs", Delay.delay_color(@dep_delay_min)]}>{@dep_time}</div>
         </div>
         <span class="text-gray-600 text-xs flex-1 text-center">──────▶</span>
         <div class="text-right">
           <div class="font-mono text-white font-medium">{@destination}</div>
-          <div class={["font-mono text-xs", DelayUtils.delay_color(@arr_delay_min)]}>{@arr_time}</div>
+          <div class={["font-mono text-xs", Delay.delay_color(@arr_delay_min)]}>{@arr_time}</div>
         </div>
       </div>
 

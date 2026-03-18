@@ -291,7 +291,7 @@ defmodule AeroVisionWeb.SettingsLive do
   end
 
   def handle_event("purge_cache", _params, socket) do
-    AeroVision.Flight.Skylink.FlightStatus.clear_cache()
+    AeroVision.Flight.FlightStatus.clear_cache()
     AeroVision.Flight.Tracker.clear_flights()
     {:noreply, assign(socket, saved_flash: "cache_purged")}
   end

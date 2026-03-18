@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.AirportTimezones do
+defmodule AeroVision.Flight.Utils.AirportTimezones do
   @moduledoc """
   Static mapping of IATA airport codes to IANA timezone identifiers.
   Used to convert local airport times from Skylink API to UTC.

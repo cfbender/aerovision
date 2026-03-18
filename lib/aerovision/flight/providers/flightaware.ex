@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.FlightAware do
+defmodule AeroVision.Flight.Providers.FlightAware do
   @moduledoc """
   Scrapes FlightAware flight-tracker pages for flight enrichment data.
 
@@ -10,15 +10,21 @@ defmodule AeroVision.Flight.FlightAware do
   IATA conversion is needed.
 
   This module is stateless — caching and rate-limiting are handled by the
-  caller (typically `Skylink.FlightStatus` GenServer).
+  caller (typically the `FlightStatus` GenServer).
   """
+
+  @behaviour AeroVision.Flight.FlightProvider
 
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.FlightProvider
 
   require Logger
 
   @base_url "https://www.flightaware.com/live/flight"
+
+  @impl FlightProvider
+  def name, do: "FlightAware"
 
   @user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
 
@@ -39,6 +45,7 @@ defmodule AeroVision.Flight.FlightAware do
       iex> FlightAware.fetch("N123AB")
       {:error, :no_flight_data}
   """
+  @impl FlightProvider
   @spec fetch(String.t()) :: {:ok, FlightInfo.t()} | {:error, atom() | tuple()}
   def fetch(callsign) when is_binary(callsign) do
     normalized = callsign |> String.trim() |> String.upcase()

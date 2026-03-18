@@ -69,7 +69,9 @@ defmodule AeroVision.Display.Driver do
       alive: alive
     }
 
-    if alive do
+    host? = Application.get_env(:aerovision, :target, :host) == :host
+
+    if alive and not host? do
       # Disable the Linux RT scheduler throttle after the hzeller library
       # has initialized. hzeller's DisableRealtimeThrottling() writes 990000
       # during NewMatrix(), which throttles the refresh thread for 10ms every

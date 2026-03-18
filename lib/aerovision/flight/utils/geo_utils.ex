@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.GeoUtils do
+defmodule AeroVision.Flight.Utils.Geo do
   @moduledoc "Geographic utility functions for flight tracking."
 
   @earth_radius_km 6371.0

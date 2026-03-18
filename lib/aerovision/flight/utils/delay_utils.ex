@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.DelayUtils do
+defmodule AeroVision.Flight.Utils.Delay do
   @moduledoc """
   Delay computation and color mapping utilities for flight times.
 

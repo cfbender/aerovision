@@ -2,8 +2,8 @@ defmodule AeroVision.Flight.FlightAwareTest do
   use ExUnit.Case, async: true
 
   alias AeroVision.Flight.Airport
-  alias AeroVision.Flight.FlightAware
   alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.Providers.FlightAware
 
   @fixtures_dir Path.join([__DIR__, "..", "..", "fixtures"])
 

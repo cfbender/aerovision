@@ -1,7 +1,7 @@
 defmodule AeroVision.Flight.AirlineCodesTest do
   use ExUnit.Case, async: true
 
-  alias AeroVision.Flight.AirlineCodes
+  alias AeroVision.Flight.Utils.AirlineCodes
 
   # ──────────────────────────────────────────────── icao_to_iata ──
 

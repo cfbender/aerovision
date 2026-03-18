@@ -17,10 +17,10 @@ defmodule AeroVision.Flight.Tracker do
 
   alias AeroVision.Config.Store
   alias AeroVision.Flight.FlightInfo
-  alias AeroVision.Flight.GeoUtils
-  alias AeroVision.Flight.Skylink.FlightStatus
+  alias AeroVision.Flight.FlightStatus
   alias AeroVision.Flight.StateVector
   alias AeroVision.Flight.TrackedFlight
+  alias AeroVision.Flight.Utils.Geo
 
   require Logger
 
@@ -606,7 +606,7 @@ defmodule AeroVision.Flight.Tracker do
 
       distance =
         if is_number(sv.latitude) and is_number(sv.longitude) do
-          GeoUtils.haversine_km(lat, lon, sv.latitude, sv.longitude)
+          Geo.haversine_km(lat, lon, sv.latitude, sv.longitude)
         else
           999_999.0
         end

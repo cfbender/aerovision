@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.AircraftCodes do
+defmodule AeroVision.Flight.Utils.AircraftCodes do
   @moduledoc """
   Aircraft type code abbreviation utilities.
 

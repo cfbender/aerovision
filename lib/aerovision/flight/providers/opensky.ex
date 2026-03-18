@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.OpenSky do
+defmodule AeroVision.Flight.Providers.OpenSky do
   @moduledoc """
   OpenSky ADS-B poller.
 
@@ -26,8 +26,8 @@ defmodule AeroVision.Flight.OpenSky do
   use GenServer
 
   alias AeroVision.Config.Store
-  alias AeroVision.Flight.GeoUtils
   alias AeroVision.Flight.StateVector
+  alias AeroVision.Flight.Utils.Geo
   alias AeroVision.TimeSync
 
   require Logger
@@ -169,7 +169,7 @@ defmodule AeroVision.Flight.OpenSky do
           lat = Store.get(:location_lat)
           lon = Store.get(:location_lon)
           radius_km = Store.get(:radius_km)
-          {min_lat, min_lon, max_lat, max_lon} = GeoUtils.bounding_box(lat, lon, radius_km)
+          {min_lat, min_lon, max_lat, max_lon} = Geo.bounding_box(lat, lon, radius_km)
           %{lamin: min_lat, lomin: min_lon, lamax: max_lat, lomax: max_lon}
 
         _ ->

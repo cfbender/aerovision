@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.Skylink.ADSB do
+defmodule AeroVision.Flight.Providers.Skylink.ADSB do
   @moduledoc """
   Skylink ADS-B poller.
 

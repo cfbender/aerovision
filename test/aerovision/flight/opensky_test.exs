@@ -2,7 +2,7 @@ defmodule AeroVision.Flight.OpenSkyTest do
   use ExUnit.Case, async: false
 
   alias AeroVision.Config.Store
-  alias AeroVision.Flight.OpenSky
+  alias AeroVision.Flight.Providers.OpenSky
 
   setup do
     Store.reset()

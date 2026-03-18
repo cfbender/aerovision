@@ -3,7 +3,7 @@ defmodule AeroVision.Flight.FlightStatsTest do
 
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.FlightInfo
-  alias AeroVision.Flight.FlightStats
+  alias AeroVision.Flight.Providers.FlightStats
 
   @fixtures_dir Path.join([__DIR__, "..", "..", "fixtures"])
 

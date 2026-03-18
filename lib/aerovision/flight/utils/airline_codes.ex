@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.AirlineCodes do
+defmodule AeroVision.Flight.Utils.AirlineCodes do
   @moduledoc """
   Bidirectional ICAO ↔ IATA airline code lookup and ADS-B callsign parser.
 

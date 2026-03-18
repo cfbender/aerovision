@@ -1,4 +1,4 @@
-defmodule AeroVision.Flight.FlightStats do
+defmodule AeroVision.Flight.Providers.FlightStats do
   @moduledoc """
   Scrapes FlightStats flight-tracker pages for flight enrichment data.
 
@@ -7,16 +7,22 @@ defmodule AeroVision.Flight.FlightStats do
   into a `%FlightInfo{}` struct.
 
   This module is stateless — caching and rate-limiting are handled by the
-  caller (typically `Skylink.FlightStatus` GenServer).
+  caller (typically the `FlightStatus` GenServer).
   """
 
-  alias AeroVision.Flight.AirlineCodes
+  @behaviour AeroVision.Flight.FlightProvider
+
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.FlightInfo
+  alias AeroVision.Flight.FlightProvider
+  alias AeroVision.Flight.Utils.AirlineCodes
 
   require Logger
 
   @base_url "https://www.flightstats.com/v2/flight-tracker"
+
+  @impl FlightProvider
+  def name, do: "FlightStats"
 
   @user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
 
@@ -37,6 +43,7 @@ defmodule AeroVision.Flight.FlightStats do
       iex> FlightStats.fetch("N123AB")
       {:error, :unknown_callsign}
   """
+  @impl FlightProvider
   @spec fetch(String.t()) :: {:ok, FlightInfo.t()} | {:error, atom() | String.t()}
   def fetch(callsign) when is_binary(callsign) do
     with {:ok, {iata, flight_number}} <- AirlineCodes.parse_callsign(callsign),

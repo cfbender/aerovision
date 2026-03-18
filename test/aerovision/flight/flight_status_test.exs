@@ -1,13 +1,13 @@
-defmodule AeroVision.Flight.Skylink.FlightStatusTest do
+defmodule AeroVision.Flight.FlightStatusTest do
   use ExUnit.Case, async: false
   use Mimic
 
   alias AeroVision.Config.Store
   alias AeroVision.Flight.Airport
-  alias AeroVision.Flight.FlightAware
   alias AeroVision.Flight.FlightInfo
-  alias AeroVision.Flight.FlightStats
-  alias AeroVision.Flight.Skylink.FlightStatus
+  alias AeroVision.Flight.FlightStatus
+  alias AeroVision.Flight.Providers.FlightAware
+  alias AeroVision.Flight.Providers.FlightStats
 
   @cache_table :aerovision_skylink_cache
 

@@ -5,7 +5,7 @@ defmodule AeroVision.Flight.TrackerTest do
   alias AeroVision.Config.Store
   alias AeroVision.Flight.Airport
   alias AeroVision.Flight.FlightInfo
-  alias AeroVision.Flight.Skylink.FlightStatus
+  alias AeroVision.Flight.FlightStatus
   alias AeroVision.Flight.StateVector
   alias AeroVision.Flight.TrackedFlight
   alias AeroVision.Flight.Tracker
