@@ -454,18 +454,28 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 ┌─────────────────────────────────────────────────────────────┐
 │                    Nerves (Linux on Pi)                      │
 │                                                             │
-│  AeroVision.Application (OTP Supervisor)                    │
-│    ├── Config.Store          JSON file on /data partition   │
+│  AeroVision.Application (one_for_one)                       │
+│    ├── Phoenix.PubSub                                       │
+│    ├── Config.Store          Atomic JSON settings + env seed│
+│    ├── AeroVisionWeb.Telemetry                              │
 │    ├── Network.Manager       WiFi + AP fallback (VintageNet)│
-│    ├── Flight.Skylink.FlightStatus  Enrichment pipeline + ETS cache │
-│    ├── Flight.Skylink.ADSB         ADS-B poller (tracked, 5min) │
-│    ├── Flight.OpenSky              ADS-B poller (nearby, 30s)   │
-│    ├── Flight.Tracker        State aggregation + filtering  │
-│    ├── Display.Driver        Go port manager (packet:4)     │
-│    ├── Display.Renderer      Frame builder + display modes  │
-│    ├── Display.PreviewServer Pixel relay for /preview page  │
-│    ├── GPIO.Button           Physical button handler        │
-│    └── AeroVisionWeb.Endpoint  Phoenix + LiveView on :80    │
+│    │                                                        │
+│    ├── FlightSupervisor      (one_for_one)                  │
+│    │     ├── Cache (:flight_cache)    ETS + CubDB, 24h TTL  │
+│    │     ├── Cache (:tracker_cache)   CubDB-persisted state │
+│    │     ├── Flight.FlightStatus      Enrichment orchestrator│
+│    │     ├── Providers.Skylink.ADSB   ADS-B poller (5min)   │
+│    │     ├── Providers.OpenSky        ADS-B poller (30s)    │
+│    │     └── Flight.Tracker           State + filtering     │
+│    │                                                        │
+│    ├── HardwareSupervisor    (rest_for_one)                 │
+│    │     ├── Display.Driver       Go Port (packet:4)        │
+│    │     ├── Display.PreviewServer  Pixel relay (host only) │
+│    │     ├── Display.Renderer     Frame builder + modes     │
+│    │     └── GPIO.Button          Physical button handler   │
+│    │                                                        │
+│    ├── AeroVisionWeb.Endpoint  Phoenix + LiveView on :80    │
+│    └── Network.Watchdog        AP mode if no internet       │
 │                                       │                     │
 │                          4-byte length-prefixed JSON        │
 │                                       ▼                     │
@@ -477,14 +487,16 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 ```
 
 **Data flow**:
-1. `OpenSky` polls every 30 seconds in nearby mode (bounding box); `Skylink.ADSB` polls every 5 minutes in tracked mode (by callsign). Each source only polls when active — they don't overlap. Automatic cross-fallback if a source has no credentials.
+1. `Providers.OpenSky` polls every 30 seconds in nearby mode (bounding box); `Providers.Skylink.ADSB` polls every 5 minutes in tracked mode (by callsign). Each source only polls when active — they don't overlap. Automatic cross-fallback if a source has no credentials.
 2. Both sources broadcast `{:flights_raw, vectors}` on the same PubSub topic. `Tracker` consumes from both.
-3. `Tracker` requests enrichment for new flights via `FlightStatus`. In nearby mode, only the 5 closest flights get enrichment requests (not all flights in the radius) to reduce unnecessary API/scraping load. `FlightStatus` runs a 3-source enrichment waterfall: **FlightAware** (HTML scraping, free, primary) → **FlightStats** (HTML scraping, free, fallback) → **Skylink API** (paid, final fallback). FlightAware and FlightStats require no API key — they scrape public flight tracker pages. Skylink is only used when both free sources fail and an API key is configured. Enrichment data is cached in ETS for 24 hours. In tracked mode, flights with stale data (>30 minutes old) are automatically re-enriched to keep ETAs and status current during long flights. Flights with terminal status (Landed, Cancelled) skip re-enrichment. When both free sources return permanent failures for a callsign, it is negatively cached to avoid repeated futile requests.
+3. `Tracker` delegates enrichment requests to `Flight.FlightStatus`, the top-level enrichment orchestrator, which implements a waterfall through pluggable providers via the `FlightProvider` behaviour (`@callback fetch/1`): **FlightAware** (HTML scraping, free, primary) → **FlightStats** (HTML scraping, free, fallback) → **Skylink API** (paid, final fallback). All three enrichment providers implement the `FlightProvider` behaviour. FlightAware and FlightStats require no API key — they scrape public flight tracker pages. Skylink is only used when both free sources fail and an API key is configured. Enrichment data is cached by `AeroVision.Cache` (ETS read-through + CubDB persistence, 24h TTL). In nearby mode, only the 5 closest flights get enrichment requests (not all flights in the radius) to reduce unnecessary API/scraping load. In tracked mode, flights with stale data (>30 minutes old) are automatically re-enriched to keep ETAs and status current during long flights. Flights with terminal status (Landed, Cancelled) skip re-enrichment. When both free sources return permanent failures for a callsign, it is negatively cached to avoid repeated futile requests. `Tracker` itself delegates to focused sub-modules: `Enrichment` (enrichment policy and synthetic entries), `Filters` (airline/airport/distance filtering and ranking), and `Progress` (time-based flight progress, 0.0–1.0).
 4. `Renderer` builds display commands and sends them to `Driver`
 5. `Driver` forwards commands to the Go binary via stdin (4-byte length-prefixed JSON)
 6. The Go binary renders to the LED matrix using double-buffered vsync swaps
 
-**NTP sync gate**: The Pi Zero 2W has no real-time clock — on boot, the system clock starts at firmware build time until NTP syncs. `AeroVision.TimeSync.synchronized?/0` gates all HTTPS callers (`FlightStatus`, `ADSB`, `OpenSky`) to prevent TLS certificate validation failures from clock skew.
+`FlightSupervisor` isolates the entire flight pipeline — a flaky API or crashed poller cannot affect the display. `HardwareSupervisor` isolates hardware — a Go binary crash cannot take down the web UI or flight logic.
+
+**NTP sync gate**: The Pi Zero 2W has no real-time clock — on boot, the system clock starts at firmware build time until NTP syncs. `AeroVision.TimeSync.synchronized?/0` gates all HTTPS callers (`Flight.FlightStatus`, `Providers.Skylink.ADSB`, `Providers.OpenSky`) to prevent TLS certificate validation failures from clock skew.
 
 **Display commands**:
 - `flight_card` — renders a full flight information card
@@ -498,7 +510,7 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 
 **Idle animation**: When no flights are in range, the `scan_anim` goroutine flies a 16×16 top-down airplane sprite across the display. Each pass picks a random cardinal diagonal (NE/SE/SW/NW) and entry position. The sprite is pre-rotated at startup into all 4 orientations using pixel-level rotation of the NE master sprite. The animation goroutine checks if it's already running before starting — sending `scan_anim` repeatedly (e.g. on each ADS-B poll) does not restart or interrupt the animation.
 
-**Settings storage**: Configuration is written atomically to `settings.json` using write-then-rename. A crash mid-write leaves the previous file untouched. Flight enrichment data (Skylink FlightStatus responses) is cached separately in CubDB — cache loss on a bad shutdown is harmless.
+**Settings storage**: Configuration is written atomically to `settings.json` using write-then-rename. A crash mid-write leaves the previous file untouched. Flight enrichment data is cached in the `:flight_cache` `AeroVision.Cache` instance (ETS + CubDB) — cache loss on a bad shutdown is harmless. Tracker state (active flight selection, enrichment status) is persisted in a separate CubDB-backed `:tracker_cache` instance so it survives restarts without losing context.
 
 **Build-time config injection**: `config/config.exs` reads `.env` at `mix firmware` time and compiles the values into the firmware as application config (`Application.get_env(:aerovision, :env_seeds)`). The device reads from application config at startup — no file I/O needed on the device.
 
@@ -569,37 +581,51 @@ aerovision/
 ├── mise.toml                     # Pinned tool versions (Elixir, Erlang, Go)
 ├── lib/
 │   ├── aerovision/
-│   │   ├── application.ex        # OTP supervision tree
-│   │   ├── db.ex                 # CubDB wrapper (enrichment cache)
+│   │   ├── application.ex        # OTP supervision tree (3-branch)
+│   │   ├── cache.ex              # Generic CubDB+ETS cache with TTL, pruning, versioning
+│   │   ├── db.ex                 # CubDB wrapper (corruption recovery)
 │   │   ├── time_sync.ex          # NTP sync gate for HTTPS callers (apply/3 wrapper)
+│   │   ├── flight_supervisor.ex  # one_for_one: Cache×2, FlightStatus, ADSB, OpenSky, Tracker
+│   │   ├── hardware_supervisor.ex # rest_for_one: Driver → PreviewServer → Renderer → Button
 │   │   ├── config/store.ex       # Atomic JSON settings, build-time env seeding
-│   │   ├── network/manager.ex    # WiFi + AP mode (VintageNet)
+│   │   ├── network/
+│   │   │   ├── manager.ex        # WiFi + AP mode (VintageNet)
+│   │   │   └── watchdog.ex       # Forces AP mode if no internet within timeout
 │   │   ├── flight/
-│   │   │   ├── flightaware.ex         # FlightAware scraper (primary enrichment, free)
-│   │   │   ├── flightstats.ex         # FlightStats scraper (fallback enrichment, free)
-│   │   │   ├── airline_codes.ex       # ICAO↔IATA airline code mapping
-│   │   │   ├── flight_info.ex         # %FlightInfo{} and %Airport{} structs
-│   │   │   ├── skylink/
-│   │   │   │   ├── adsb.ex            # Skylink ADS-B poller (tracked mode, 5min)
-│   │   │   │   └── flight_status.ex   # Enrichment pipeline + ETS/CubDB cache
-│   │   │   ├── opensky.ex             # OpenSky ADS-B poller (nearby mode, 30s)
-│   │   │   ├── airport_timezones.ex   # IATA → IANA timezone static map
-│   │   │   ├── tracker.ex             # State aggregation + filtering
-│   │   │   └── geo_utils.ex           # Haversine, unit conversion
+│   │   │   ├── tracker.ex             # State aggregation GenServer
+│   │   │   ├── enrichment.ex          # Enrichment policy (who/when to enrich, synthetic entries)
+│   │   │   ├── filters.ex            # Pure filtering/sorting/ranking functions
+│   │   │   ├── progress.ex           # Time-based flight progress (0.0–1.0)
+│   │   │   ├── flight_status.ex      # Enrichment orchestrator (waterfall: FA → FS → Skylink)
+│   │   │   ├── flight_provider.ex    # Behaviour (@callback fetch/1, name/0)
+│   │   │   ├── flight_info.ex        # %FlightInfo{} and %Airport{} structs
+│   │   │   ├── state_vector.ex       # %StateVector{} — ADS-B telemetry (imperial units)
+│   │   │   ├── tracked_flight.ex     # %TrackedFlight{} — combined display model
+│   │   │   ├── providers/
+│   │   │   │   ├── flightaware.ex         # FlightAware scraper (primary enrichment, free)
+│   │   │   │   ├── flightstats.ex         # FlightStats scraper (fallback enrichment, free)
+│   │   │   │   ├── opensky.ex             # OpenSky ADS-B poller (nearby mode, 30s)
+│   │   │   │   └── skylink/
+│   │   │   │       ├── adsb.ex            # Skylink ADS-B poller (tracked mode, 5min)
+│   │   │   │       └── api.ex             # Skylink REST API client (paid fallback)
+│   │   │   └── utils/
+│   │   │       ├── aircraft_codes.ex      # ICAO aircraft type code lookup
+│   │   │       ├── airline_codes.ex       # ICAO↔IATA airline code mapping
+│   │   │       ├── airport_timezones.ex   # IATA → IANA timezone static map
+│   │   │       ├── delay_utils.ex         # Delay classification helpers
+│   │   │       └── geo_utils.ex           # Haversine, unit conversion
 │   │   ├── display/
 │   │   │   ├── driver.ex         # Go Port manager, PubSub relay
 │   │   │   ├── renderer.ex       # Display mode state machine
 │   │   │   └── preview_server.ex # Software pixel relay for /preview
 │   │   └── gpio/button.ex        # Physical button (nanosecond timestamps)
-│   ├── aerovision_web/
-│   │   └── live/
-│   │       ├── dashboard_live.ex # Flight dashboard + deferred-connect setup wizard
-│   │       ├── settings_live.ex  # Full configuration UI + reboot/shutdown
-│   │       ├── setup_live.ex     # WiFi-only setup page
-│   │       ├── logs_live.ex       # Device log viewer (RingLogger)
-│   │       └── preview_live.ex   # Live 64×64 pixel grid preview
-│   └── host_stubs/
-│       └── target_stubs.ex       # Circuits.GPIO, VintageNet, Nerves stubs (host only)
+│   └── aerovision_web/
+│       └── live/
+│           ├── dashboard_live.ex # Flight dashboard + deferred-connect setup wizard
+│           ├── settings_live.ex  # Full configuration UI + reboot/shutdown
+│           ├── setup_live.ex     # WiFi-only setup page
+│           ├── logs_live.ex      # Device log viewer (RingLogger)
+│           └── preview_live.ex   # Live 64×64 pixel grid preview
 ├── go_src/
 │   ├── Makefile                  # Auto-downloads hzeller lib, uses Nerves toolchain
 │   └── led_driver/
@@ -612,7 +638,10 @@ aerovision/
 │       ├── protocol.go           # 4-byte length-prefixed JSON IPC
 │       ├── display.go            # All rendering: flight card, animations, screens
 │       ├── fonts.go              # 5×7 and 4×5 bitmap fonts, plane sprite, clipped draw
-│       └── qrcode.go             # QR code generation
+│       ├── logos.go              # Airline logo pixel art
+│       ├── qrcode.go             # QR code generation
+│       ├── redirect.go           # Stderr redirect (target builds)
+│       └── redirect_stub.go      # Stderr redirect no-op (host builds)
 ├── config/
 │   ├── config.exs                # Shared config + build-time .env injection
 │   ├── dev.exs                   # Dev overrides (host-only code reloader etc.)
@@ -623,7 +652,7 @@ aerovision/
 │   ├── js/app.js                 # Phoenix LiveView JS + PixelGrid hook
 │   ├── css/app.css               # Tailwind v4
 │   └── vendor/                   # topbar, heroicons plugin
-├── rootfs_overlay/               # Files overlaid onto Nerves root FS (zoneinfo/ is gitignored, generated by mix setup)
+├── rootfs_overlay/               # Files overlaid onto Nerves root FS (zoneinfo/ gitignored)
 └── priv/
     └── led_driver                # Compiled Go binary (included in firmware)
 ```
