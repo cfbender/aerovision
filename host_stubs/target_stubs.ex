@@ -3,11 +3,9 @@ defmodule Circuits.GPIO do
 
   # Functions return opaque types via apply/3 so the compiler cannot infer a
   # specific return type and won't warn about unreachable branches in callers.
-  def open(pin, direction, opts \\ []),
-    do: apply(__MODULE__, :_open, [pin, direction, opts])
+  def open(pin, direction, opts \\ []), do: apply(__MODULE__, :_open, [pin, direction, opts])
 
-  def set_interrupts(gpio, trigger),
-    do: apply(__MODULE__, :_set_interrupts, [gpio, trigger])
+  def set_interrupts(gpio, trigger), do: apply(__MODULE__, :_set_interrupts, [gpio, trigger])
 
   def close(_gpio), do: :ok
   def read(_gpio), do: {:ok, 0}
@@ -21,11 +19,20 @@ end
 defmodule VintageNet do
   @moduledoc "Stub for VintageNet — satisfies compiler in test/host envs."
   def configure(_interface, _config), do: :ok
+  def deconfigure(_interface, _opts \\ []), do: :ok
   def subscribe(_property), do: :ok
   def get(_property), do: nil
   def get_configuration(_interface), do: nil
   def scan(_interface), do: []
   def unsubscribe(_property), do: :ok
+
+  defmodule Connectivity do
+    @moduledoc false
+    defmodule Inspector do
+      @moduledoc false
+      def check_internet(_interface, _cache), do: {:internet, %{}}
+    end
+  end
 end
 
 defmodule Nerves.Runtime do

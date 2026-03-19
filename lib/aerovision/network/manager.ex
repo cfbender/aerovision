@@ -148,6 +148,12 @@ defmodule AeroVision.Network.Manager do
 
   @impl true
   def init(_opts) do
+    # deconfigure usb0 to prevent it from interfering with our connection monitoring and fallback logic.
+    if on_target?() do
+      Logger.info("[Network.Manager] Deconfiguring usb0 to prevent interference with connection monitoring")
+      :ok = VintageNet.deconfigure("usb0")
+    end
+
     # Subscribe to VintageNet connection-state changes
     vintage_net_subscribe(["interface", @interface, "connection"])
 

@@ -31,9 +31,9 @@ defmodule AeroVision.Network.Watchdog do
 
       ping_timer = Process.send_after(self(), :ping, @ping_interval_ms)
       timeout_timer = Process.send_after(self(), :timeout, @timeout_ms)
-      {:ok, %{timeout_timer: timeout_timer, ping_timer: ping_timer, armed: true}}
+      {:ok, %{timeout_timer: timeout_timer, ping_timer: ping_timer, armed: true, ping_cache: %{}}}
     else
-      {:ok, %{timeout_timer: nil, ping_timer: nil, armed: false}}
+      {:ok, %{timeout_timer: nil, ping_timer: nil, armed: false, ping_cache: %{}}}
     end
   end
 
@@ -53,13 +53,11 @@ defmodule AeroVision.Network.Watchdog do
   def handle_cast(:ping, %{armed: false} = state), do: {:noreply, state}
 
   def handle_cast(:ping, state) do
+    cache = state.ping_cache
+
     Task.start(fn ->
-      if internet_reachable?() do
-        GenServer.cast(__MODULE__, :disarm)
-      else
-        Logger.warning("[Watchdog] Ping failed — still waiting for connection")
-        Process.send_after(__MODULE__, :ping, @ping_interval_ms)
-      end
+      {status, new_cache} = VintageNet.Connectivity.Inspector.check_internet("wlan0", cache)
+      send(__MODULE__, {:ping_result, status, new_cache})
     end)
 
     {:noreply, state}
@@ -81,13 +79,19 @@ defmodule AeroVision.Network.Watchdog do
     {:noreply, state}
   end
 
-  def handle_info(_msg, state) do
+  def handle_info({:ping_result, :internet, _cache}, state) do
+    GenServer.cast(__MODULE__, :disarm)
     {:noreply, state}
   end
 
-  defp internet_reachable? do
-    urls = ["https://www.google.com", "https://hex.pm"]
-    Enum.any?(urls, fn url -> match?({:ok, %{status: 200}}, Req.get(url, recv_timeout: 5_000)) end)
+  def handle_info({:ping_result, _status, new_cache}, state) do
+    Logger.warning("[Watchdog] Ping failed — still waiting for connection")
+    Process.send_after(__MODULE__, :ping, @ping_interval_ms)
+    {:noreply, %{state | ping_cache: new_cache}}
+  end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
   end
 
   defp on_target? do
