@@ -189,11 +189,10 @@ defmodule AeroVision.Flight.TrackerTest do
     assert_receive {:display_flights, [_flight]}
   end
 
-  test "on_ground flights are still tracked" do
+  test "nearby mode excludes grounded flights from display" do
     broadcast_raw([sv("AAL1234", on_ground: true)])
     assert_receive {:display_flights, flights}
-    assert length(flights) == 1
-    assert hd(flights).state_vector.on_ground == true
+    assert flights == []
   end
 
   # ── {:flight_enriched, callsign, info} ─────────────────────────────────────
@@ -380,6 +379,21 @@ defmodule AeroVision.Flight.TrackerTest do
     refute "UAL890" in callsigns
   end
 
+  test "nearby mode shows airborne flights but filters grounded ones" do
+    broadcast_raw([
+      sv("AAL1234", on_ground: true),
+      sv("DAL567", on_ground: false),
+      sv("UAL890")
+    ])
+
+    assert_receive {:display_flights, flights}
+
+    callsigns = Enum.map(flights, & &1.state_vector.callsign)
+    refute "AAL1234" in callsigns
+    assert "DAL567" in callsigns
+    assert "UAL890" in callsigns
+  end
+
   # ── filtering: mode :tracked ───────────────────────────────────────────────
 
   test "tracked mode only returns exact callsign matches" do
@@ -417,6 +431,18 @@ defmodule AeroVision.Flight.TrackerTest do
     assert_receive {:display_flights, flights}
     assert length(flights) == 1
     assert hd(flights).state_vector.callsign == "AAL1234"
+  end
+
+  test "tracked mode still displays grounded flights" do
+    broadcast_config(:display_mode, :tracked)
+    assert_receive {:display_flights, _}
+    broadcast_config(:tracked_flights, ["AAL1234"])
+    assert_receive {:display_flights, _}
+
+    broadcast_raw([sv("AAL1234", on_ground: true)])
+    assert_receive {:display_flights, flights}
+    assert length(flights) == 1
+    assert hd(flights).state_vector.on_ground == true
   end
 
   # ── top_flights ordering ───────────────────────────────────────────────────

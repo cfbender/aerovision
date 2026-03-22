@@ -88,8 +88,8 @@ defmodule AeroVisionWeb.SettingsLive do
     radius_mi = parse_float(params["radius_mi"])
 
     if lat && lon && radius_mi do
-      Store.put(:location_lat, lat)
-      Store.put(:location_lon, lon)
+      Store.put(:location_lat, Float.round(lat, 6))
+      Store.put(:location_lon, Float.round(lon, 6))
       Store.put(:radius_km, mi_to_km(radius_mi))
 
       {:noreply,
@@ -380,7 +380,7 @@ defmodule AeroVisionWeb.SettingsLive do
                     type="number"
                     name="location[location_lat]"
                     value={@location_lat}
-                    step="0.0001"
+                    step="any"
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                     placeholder="35.7721"
                   />
@@ -391,7 +391,7 @@ defmodule AeroVisionWeb.SettingsLive do
                     type="number"
                     name="location[location_lon]"
                     value={@location_lon}
-                    step="0.0001"
+                    step="any"
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                     placeholder="-78.63861"
                   />

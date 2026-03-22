@@ -2,12 +2,15 @@ defmodule AeroVision.Network.Manager do
   @moduledoc """
   WiFi and AP mode network management for AeroVision.
 
-  Manages WiFi connectivity with an AP mode fallback for initial setup:
+  Manages WiFi connectivity with a reboot-retry strategy on disconnection:
 
   - On boot, reads WiFi credentials from `AeroVision.Config.Store`.
   - If credentials exist, configures VintageNet for infrastructure (client) mode.
   - If no credentials exist, immediately enters AP mode (`"AeroVision-Setup"`).
-  - Monitors connection state and falls back to AP mode after 30 s of disconnection.
+  - Monitors connection state; reboots after 60 s of disconnection so VintageNet
+    gets a clean driver state and retries the stored credentials on next boot.
+  - AP mode is only entered when no credentials exist or via `force_ap_mode/0`
+    (e.g. long-press of the physical button).
   - Responds to external triggers: `force_ap_mode/0`, `connect_wifi/2`.
   - Safe to run on host (development) — VintageNet calls are no-ops when not on target.
   - Publishes `{:network, :ap_mode}` and `{:network, :connected, ip}` via PubSub.
@@ -265,14 +268,23 @@ defmodule AeroVision.Network.Manager do
     {:noreply, state}
   end
 
-  # Reconnect timer fired — still disconnected; fall back to AP mode
+  # Reconnect timer fired — still disconnected; reboot to retry WiFi with a clean driver state
   @impl true
   def handle_info(:reconnect_timeout, state) do
-    Logger.warning("[Network.Manager] Reconnect timeout — still disconnected, switching to AP mode")
+    Logger.warning("[Network.Manager] Reconnect timeout — rebooting to retry WiFi")
 
-    configure_ap()
-    broadcast_ap_mode()
-    {:noreply, %{state | mode: :ap, reconnect_timer: nil}}
+    if on_target?() do
+      Nerves.Runtime.reboot()
+    else
+      ssid = Store.get(:wifi_ssid)
+      password = Store.get(:wifi_password)
+
+      if credentials_present?(ssid, password) do
+        configure_infrastructure(ssid, password)
+      end
+    end
+
+    {:noreply, %{state | reconnect_timer: nil}}
   end
 
   # Ignore any other messages (e.g. PubSub broadcasts we subscribe to but don't handle)

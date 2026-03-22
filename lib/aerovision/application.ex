@@ -7,7 +7,6 @@ defmodule AeroVision.Application do
   use Application
 
   alias AeroVision.Network.Manager
-  alias AeroVision.Network.Watchdog
 
   require Logger
 
@@ -43,24 +42,20 @@ defmodule AeroVision.Application do
       # Hardware subsystem (Driver → PreviewServer → Renderer → Button via rest_for_one)
       AeroVision.HardwareSupervisor,
       # Phoenix endpoint for development — isolated from hardware/flight crashes
-      AeroVisionWeb.Endpoint,
-      # Network watchdog — forces AP mode if no client connects within timeout (no-op on host)
-      Watchdog
+      AeroVisionWeb.Endpoint
     ]
   end
 
   defp target_children(_target) do
     [
-      # Network management (WiFi + AP fallback)
+      # Network management (WiFi + AP mode for fresh devices / button press)
       Manager,
       # Flight data pipeline (independent sources; a single-source crash stays contained)
       AeroVision.FlightSupervisor,
       # Hardware subsystem (Driver → Renderer → Button via rest_for_one)
       AeroVision.HardwareSupervisor,
       # Phoenix endpoint — isolated from hardware/flight crashes
-      AeroVisionWeb.Endpoint,
-      # Network watchdog — forces AP mode if no client connects within timeout
-      Watchdog
+      AeroVisionWeb.Endpoint
     ]
   end
 

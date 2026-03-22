@@ -131,8 +131,8 @@ defmodule AeroVisionWeb.DashboardLive do
     radius_mi = parse_float(params["radius_mi"])
 
     if lat && lon && radius_mi do
-      Store.put(:location_lat, lat)
-      Store.put(:location_lon, lon)
+      Store.put(:location_lat, Float.round(lat, 6))
+      Store.put(:location_lon, Float.round(lon, 6))
       Store.put(:radius_km, Float.round(radius_mi * 1.60934, 2))
     end
 
@@ -610,7 +610,7 @@ defmodule AeroVisionWeb.DashboardLive do
                     type="number"
                     name="location[lat]"
                     value=""
-                    step="0.0001"
+                    step="any"
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                     placeholder="35.7721"
                   />
@@ -621,7 +621,7 @@ defmodule AeroVisionWeb.DashboardLive do
                     type="number"
                     name="location[lon]"
                     value=""
-                    step="0.0001"
+                    step="any"
                     class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
                     placeholder="-78.63861"
                   />

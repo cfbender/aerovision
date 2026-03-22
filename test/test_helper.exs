@@ -7,7 +7,6 @@ Mimic.copy(AeroVision.Flight.FlightStatus)
 Mimic.copy(AeroVision.Flight.Providers.Skylink.Api)
 Mimic.copy(AeroVision.Network.Manager)
 Mimic.copy(AeroVision.Display.Driver)
-Mimic.copy(AeroVision.Network.Watchdog)
 Mimic.copy(AeroVision.Flight.Tracker)
 Mimic.copy(AeroVision.Cache)
 

@@ -138,7 +138,7 @@ defmodule AeroVision.MixProject do
       loadconfig: [&bootstrap/1],
       setup: ["deps.get", "assets.setup", &copy_zoneinfo/1],
       precommit: ["format", "compile --warnings-as-errors", "test"],
-      build: ["assets.deploy", "firmware"],
+      build: ["assets.deploy", "build.driver", "firmware"],
       "build.driver": ["cmd --cd go_src make build-arm"],
       "build.driver.host": ["cmd --cd go_src make build-host"],
       deploy: ["assets.deploy", "build.driver", "firmware", "upload aerovision.local"],

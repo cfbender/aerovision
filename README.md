@@ -474,8 +474,7 @@ A full list is available on [Wikipedia](https://en.wikipedia.org/wiki/List_of_ai
 │    │     ├── Display.Renderer     Frame builder + modes     │
 │    │     └── GPIO.Button          Physical button handler   │
 │    │                                                        │
-│    ├── AeroVisionWeb.Endpoint  Phoenix + LiveView on :80    │
-│    └── Network.Watchdog        AP mode if no internet       │
+│    └── AeroVisionWeb.Endpoint  Phoenix + LiveView on :80    │
 │                                       │                     │
 │                          4-byte length-prefixed JSON        │
 │                                       ▼                     │
@@ -589,8 +588,7 @@ aerovision/
 │   │   ├── hardware_supervisor.ex # rest_for_one: Driver → PreviewServer → Renderer → Button
 │   │   ├── config/store.ex       # Atomic JSON settings, build-time env seeding
 │   │   ├── network/
-│   │   │   ├── manager.ex        # WiFi + AP mode (VintageNet)
-│   │   │   └── watchdog.ex       # Forces AP mode if no internet within timeout
+│   │   │   └── manager.ex        # WiFi + AP mode (VintageNet)
 │   │   ├── flight/
 │   │   │   ├── tracker.ex             # State aggregation GenServer
 │   │   │   ├── enrichment.ex          # Enrichment policy (who/when to enrich, synthetic entries)

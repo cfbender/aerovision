@@ -26,6 +26,7 @@ defmodule AeroVision.Flight.Filters do
       }) do
     flights
     |> Map.values()
+    |> reject_grounded()
     |> by_airline(airline_filters)
     |> by_airport(airport_filters)
     |> top_nearby(lat, lon)
@@ -132,6 +133,10 @@ defmodule AeroVision.Flight.Filters do
   end
 
   # ──────────────────────────────────────────────────── private helpers ──
+
+  defp reject_grounded(flights) do
+    Enum.reject(flights, fn tracked -> tracked.state_vector.on_ground end)
+  end
 
   defp sort_by_recency(flights) do
     Enum.sort_by(flights, fn tracked ->

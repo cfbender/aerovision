@@ -245,9 +245,16 @@ defmodule AeroVision.Network.ManagerTest do
   end
 
   @tag :capture_log
-  test ":reconnect_timeout fires and switches back to :ap mode" do
-    # Move to infrastructure first
+  test ":reconnect_timeout on host re-attempts infrastructure (no AP fallback, no reboot)" do
+    # Seed credentials so the host-path re-attempt has something to work with
+    stop_supervised!(Manager)
+    Store.put(:wifi_ssid, "MyNetwork")
+    Store.put(:wifi_password, "secret123")
+    start_supervised!(Manager)
+
     pid = GenServer.whereis(Manager)
+
+    # Move to infrastructure
     send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
     assert Manager.current_mode() == :infrastructure
 
@@ -262,10 +269,15 @@ defmodule AeroVision.Network.ManagerTest do
       50 -> :ok
     end
 
-    # Manually trigger the reconnect timeout (don't wait 30s)
+    # Manually trigger the reconnect timeout
     send(pid, :reconnect_timeout)
-    assert_receive {:network, :ap_mode}
-    assert Manager.current_mode() == :ap
+
+    # Sync with a call to ensure the message was handled
+    _ = Manager.current_mode()
+
+    # On host: no reboot, no AP mode — mode stays :disconnected, no :ap_mode broadcast
+    refute_receive {:network, :ap_mode}, 100
+    assert Manager.current_mode() == :disconnected
   end
 
   test ":disconnected while in :ap mode takes no action" do
