@@ -13,7 +13,7 @@ func (d *Display) renderQRCode(cmd Command) {
 	d.matrix.Clear()
 
 	if cmd.Data == "" {
-		sendResponse("error", "no QR data provided")
+		sendError("no QR data provided")
 		return
 	}
 
@@ -21,7 +21,7 @@ func (d *Display) renderQRCode(cmd Command) {
 	qr, err := qrcode.New(cmd.Data, qrcode.Low)
 	if err != nil {
 		log.Printf("QR generation error: %v", err)
-		sendResponse("error", err.Error())
+		sendError(err.Error())
 		return
 	}
 
@@ -57,5 +57,5 @@ func (d *Display) renderQRCode(cmd Command) {
 	}
 
 	d.matrix.Render()
-	sendResponse("ok", "")
+	sendOK()
 }

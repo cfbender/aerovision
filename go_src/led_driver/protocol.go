@@ -3,12 +3,15 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"sync"
 )
+
+const maxIPCMessageSize = 1 << 20 // 1 MiB sanity cap
 
 // Command represents an inbound IPC command from the Elixir port process.
 type Command struct {
@@ -66,7 +69,7 @@ func readMessage(r io.Reader) ([]byte, error) {
 	if msgLen == 0 {
 		return nil, fmt.Errorf("zero-length message")
 	}
-	if msgLen > 1<<20 { // 1 MiB sanity cap
+	if msgLen > maxIPCMessageSize {
 		return nil, fmt.Errorf("message too large: %d bytes", msgLen)
 	}
 	buf := make([]byte, msgLen)
@@ -110,6 +113,14 @@ func sendResponse(status, errMsg string) {
 	}
 }
 
+func sendOK() {
+	sendResponse("ok", "")
+}
+
+func sendError(errMsg string) {
+	sendResponse("error", errMsg)
+}
+
 // readLoop reads commands from stdin in a loop, calling handler for each one.
 // Returns when stdin is closed (EOF) or an unrecoverable read error occurs.
 func readLoop(handler func(cmd Command)) {
@@ -132,13 +143,13 @@ func readLoop(handler func(cmd Command)) {
 		var cmd Command
 		if err := json.Unmarshal(data, &cmd); err != nil {
 			log.Printf("JSON parse error: %v (raw: %q)", err, string(data))
-			sendResponse("error", fmt.Sprintf("json parse error: %v", err))
+			sendError(fmt.Sprintf("json parse error: %v", err))
 			continue
 		}
 
 		if cmd.Cmd == "" {
 			log.Printf("Received command with empty 'cmd' field")
-			sendResponse("error", "missing cmd field")
+			sendError("missing cmd field")
 			continue
 		}
 
@@ -148,16 +159,5 @@ func readLoop(handler func(cmd Command)) {
 
 // isEOF checks whether an error wraps io.EOF or io.ErrUnexpectedEOF.
 func isEOF(err error) bool {
-	if err == nil {
-		return false
-	}
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		return true
-	}
-	// Unwrap once for wrapped errors from ReadFull
-	type unwrapper interface{ Unwrap() error }
-	if u, ok := err.(unwrapper); ok {
-		return isEOF(u.Unwrap())
-	}
-	return false
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }

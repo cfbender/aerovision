@@ -22,6 +22,11 @@ type SoftwareMatrix struct {
 	mu     sync.Mutex
 }
 
+type pixelFrameResponse struct {
+	Status string     `json:"status"`
+	Pixels [][3]uint8 `json:"pixels"`
+}
+
 type pixel struct {
 	R, G, B uint8
 }
@@ -71,11 +76,7 @@ func (m *SoftwareMatrix) Render() {
 	}
 	m.mu.Unlock()
 
-	msg := map[string]interface{}{
-		"status": "pixels",
-		"pixels": flat,
-	}
-
+	msg := pixelFrameResponse{Status: "pixels", Pixels: flat}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return

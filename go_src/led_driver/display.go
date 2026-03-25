@@ -17,6 +17,24 @@ type Display struct {
 	animMu   sync.Mutex
 }
 
+const (
+	dividerInset = 2
+	dividerShade = uint8(40)
+)
+
+func (d *Display) drawDivider(y int) {
+	startX := dividerInset
+	endX := d.width - dividerInset - 1
+	for x := startX; x <= endX; x++ {
+		d.matrix.SetPixel(x, y, dividerShade, dividerShade, dividerShade)
+	}
+}
+
+func (d *Display) drawCenteredSmallText(y int, text string, color [3]uint8) {
+	x := (d.width - stringWidthSmall(text)) / 2
+	drawStringSmall(d.matrix, x, y, text, color[0], color[1], color[2])
+}
+
 // NewDisplay creates a Display backed by the given matrix.
 func NewDisplay(matrix Matrix, width, height int) *Display {
 	return &Display{
@@ -55,30 +73,30 @@ func (d *Display) HandleCommand(cmd Command) {
 		d.renderQRCode(cmd)
 	case "clear":
 		d.renderClear()
-		sendResponse("ok", "")
+		sendOK()
 	case "text":
 		d.renderText(cmd)
-		sendResponse("ok", "")
+		sendOK()
 	case "brightness":
 		d.setBrightness(cmd)
-		sendResponse("ok", "")
+		sendOK()
 	case "scan_anim":
 		d.renderScanAnim()
-		sendResponse("ok", "")
+		sendOK()
 	case "ap_screen":
 		d.renderAPScreen(cmd)
-		sendResponse("ok", "")
+		sendOK()
 	case "connecting_screen":
 		d.renderConnectingScreen(cmd)
-		sendResponse("ok", "")
+		sendOK()
 	case "wifi_error":
 		d.renderWifiError()
-		sendResponse("ok", "")
+		sendOK()
 	case "ping":
-		sendResponse("ok", "")
+		sendOK()
 	default:
 		log.Printf("Unknown command: %q", cmd.Cmd)
-		sendResponse("error", fmt.Sprintf("unknown command: %s", cmd.Cmd))
+		sendError(fmt.Sprintf("unknown command: %s", cmd.Cmd))
 	}
 }
 
@@ -115,9 +133,7 @@ func (d *Display) renderFlightCard(cmd Command) {
 	// DIVIDER
 	// ══════════════════════════════════════════════════════════════════════
 
-	for x := 2; x <= 61; x++ {
-		d.matrix.SetPixel(x, 35, 40, 40, 40)
-	}
+	d.drawDivider(35)
 
 	// ══════════════════════════════════════════════════════════════════════
 	// LOWER CARD — 4×5 small font, 3 data rows with 2px gaps
@@ -171,13 +187,7 @@ func (d *Display) renderFlightCard(cmd Command) {
 	// ── Progress bar at y=60-61 (2px tall), x=2..61 (60px wide) ─────────
 	barX0, barX1 := 2, 61
 	barWidth := barX1 - barX0 + 1 // 60 pixels
-	progress := cmd.Progress
-	if progress < 0 {
-		progress = 0
-	}
-	if progress > 1 {
-		progress = 1
-	}
+	progress := clampFloat(cmd.Progress, 0, 1)
 	filledPixels := int(float64(barWidth) * progress)
 
 	for x := barX0; x <= barX1; x++ {
@@ -192,7 +202,7 @@ func (d *Display) renderFlightCard(cmd Command) {
 	}
 
 	d.matrix.Render()
-	sendResponse("ok", "")
+	sendOK()
 }
 
 // renderClear fills the entire display with black.
@@ -215,13 +225,7 @@ func (d *Display) renderText(cmd Command) {
 
 // setBrightness adjusts display brightness.
 func (d *Display) setBrightness(cmd Command) {
-	v := cmd.Value
-	if v < 0 {
-		v = 0
-	}
-	if v > 100 {
-		v = 100
-	}
+	v := clampInt(cmd.Value, 0, 100)
 	d.matrix.SetBrightness(v)
 }
 
@@ -335,6 +339,7 @@ func (d *Display) renderConnectingScreen(cmd Command) {
 	cyan := [3]uint8{0, 200, 220}
 	white := [3]uint8{255, 255, 255}
 	gray := [3]uint8{120, 120, 120}
+	contentWidth := d.width - (dividerInset * 2)
 
 	drawStringSmall(d.matrix, 2, 8, "Connecting to:", gray[0], gray[1], gray[2])
 
@@ -345,30 +350,18 @@ func (d *Display) renderConnectingScreen(cmd Command) {
 
 	// Center the SSID; split at hyphen if too wide
 	ssidWidth := stringWidthSmall(ssid)
-	if ssidWidth <= 60 {
-		x := (64 - ssidWidth) / 2
-		drawStringSmall(d.matrix, x, 22, ssid, white[0], white[1], white[2])
+	if ssidWidth <= contentWidth {
+		d.drawCenteredSmallText(22, ssid, white)
 	} else {
-		line1, line2 := ssid, ""
-		for i, ch := range ssid {
-			if ch == '-' && i > 0 {
-				line1 = ssid[:i]
-				line2 = ssid[i:]
-				break
-			}
-		}
-		w1 := stringWidthSmall(line1)
-		drawStringSmall(d.matrix, (64-w1)/2, 18, line1, white[0], white[1], white[2])
+		line1, line2 := splitAtFirstHyphen(ssid)
+		d.drawCenteredSmallText(18, line1, white)
 		if line2 != "" {
-			w2 := stringWidthSmall(line2)
-			drawStringSmall(d.matrix, (64-w2)/2, 26, line2, white[0], white[1], white[2])
+			d.drawCenteredSmallText(26, line2, white)
 		}
 	}
 
 	// Divider
-	for x := 2; x <= 61; x++ {
-		d.matrix.SetPixel(x, 36, 40, 40, 40)
-	}
+	d.drawDivider(36)
 
 	drawStringSmall(d.matrix, 2, 42, "This page will", gray[0], gray[1], gray[2])
 	drawStringSmall(d.matrix, 2, 49, "disconnect.", gray[0], gray[1], gray[2])
@@ -439,9 +432,7 @@ func (d *Display) renderWifiError() {
 	drawString(d.matrix, (64-noWifiW)/2, 18, noWifiStr, red[0], red[1], red[2])
 
 	// ── Divider ──────────────────────────────────────────────────────────
-	for x := 2; x <= 61; x++ {
-		d.matrix.SetPixel(x, 29, 40, 40, 40)
-	}
+	d.drawDivider(29)
 
 	// ── Help text — small font ───────────────────────────────────────────
 	drawStringSmall(d.matrix, 2, 34, "Check router or", gray[0], gray[1], gray[2])
@@ -533,6 +524,7 @@ func (d *Display) renderAPScreen(cmd Command) {
 	white := [3]uint8{255, 255, 255}
 	gray := [3]uint8{120, 120, 120}
 	yellow := [3]uint8{255, 200, 0}
+	contentWidth := d.width - (dividerInset * 2)
 
 	ssid := cmd.SSID
 	if ssid == "" {
@@ -553,35 +545,24 @@ func (d *Display) renderAPScreen(cmd Command) {
 
 		// SSID — split at hyphen if too wide
 		ssidWidth := stringWidthSmall(ssid)
-		if ssidWidth <= 60 {
-			drawStringSmall(d.matrix, (64-ssidWidth)/2, 14, ssid, yellow[0], yellow[1], yellow[2])
+		if ssidWidth <= contentWidth {
+			d.drawCenteredSmallText(14, ssid, yellow)
 		} else {
-			line1, line2 := ssid, ""
-			for i, ch := range ssid {
-				if ch == '-' && i > 0 {
-					line1 = ssid[:i]
-					line2 = ssid[i:]
-					break
-				}
-			}
-			w1 := stringWidthSmall(line1)
-			drawStringSmall(d.matrix, (64-w1)/2, 10, line1, yellow[0], yellow[1], yellow[2])
+			line1, line2 := splitAtFirstHyphen(ssid)
+			d.drawCenteredSmallText(10, line1, yellow)
 			if line2 != "" {
-				w2 := stringWidthSmall(line2)
-				drawStringSmall(d.matrix, (64-w2)/2, 17, line2, yellow[0], yellow[1], yellow[2])
+				d.drawCenteredSmallText(17, line2, yellow)
 			}
 		}
 
 		// Divider
-		for x := 2; x <= 61; x++ {
-			d.matrix.SetPixel(x, 27, 40, 40, 40)
-		}
+		d.drawDivider(27)
 
 		// "Open browser:" label
 		drawStringSmall(d.matrix, 2, 32, "Open browser:", gray[0], gray[1], gray[2])
 
 		// Scrolling URL — clipped to display width
-		drawStringSmallClipped(d.matrix, scrollX, 42, url, 0, 64, white[0], white[1], white[2])
+		drawStringSmallClipped(d.matrix, scrollX, 42, url, 0, d.width, white[0], white[1], white[2])
 
 		// "No password" note
 		drawStringSmall(d.matrix, 2, 54, "No password", gray[0], gray[1], gray[2])
@@ -592,8 +573,8 @@ func (d *Display) renderAPScreen(cmd Command) {
 	urlWidth := stringWidthSmall(url)
 
 	// If the URL fits, just draw it statically and return.
-	if urlWidth <= 60 {
-		drawStatic((64 - urlWidth) / 2)
+	if urlWidth <= contentWidth {
+		drawStatic((d.width - urlWidth) / 2)
 		return
 	}
 
@@ -612,7 +593,7 @@ func (d *Display) renderAPScreen(cmd Command) {
 			frameMs = 50   // ~20fps scroll
 			pauseMs = 1000 // pause at start before scrolling
 		)
-		startX := 64
+		startX := d.width
 		endX := -(urlWidth + 4)
 
 		ticker := time.NewTicker(frameMs * time.Millisecond)
@@ -652,6 +633,37 @@ func (d *Display) renderAPScreen(cmd Command) {
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────
+
+func clampInt(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func clampFloat(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+// splitAtFirstHyphen returns the input as one line unless a non-leading
+// hyphen exists, in which case it splits into two lines at that hyphen.
+func splitAtFirstHyphen(s string) (string, string) {
+	for i, ch := range s {
+		if ch == '-' && i > 0 {
+			return s[:i], s[i:]
+		}
+	}
+	return s, ""
+}
 
 // formatAltitude formats an altitude in feet.
 // At or above 18,000ft: "FL350" (flight level).

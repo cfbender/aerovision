@@ -9,6 +9,19 @@ import (
 	"syscall"
 )
 
+func stdinIsTerminal() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil || stat == nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+func clearDisplay(matrix Matrix) {
+	matrix.Clear()
+	matrix.Render()
+}
+
 func main() {
 	// Log to stderr (stdout is reserved for IPC protocol)
 	log.SetOutput(os.Stderr)
@@ -38,26 +51,20 @@ func main() {
 	// Must happen before NewMatrix() which spawns the hzeller refresh thread.
 	redirectCStdout(*showRefresh)
 
-	// --demo implies --preview.
-	if *demo {
+	// --demo/--preview-ipc/--preview-pixels all imply --preview.
+	if *demo || *previewIpc || *previewPixelsFlag {
 		*preview = true
 	}
 
-	if *previewIpc {
-		*preview = true
-		previewIPC = true
-	}
-
+	previewIPC = *previewIpc
 	if *previewPixelsFlag {
-		*preview = true
 		previewPixels = true
 		previewIPC = false // pixels mode supersedes ipc mode
-		log.SetOutput(io.Discard)
 	}
 
-	// In preview-ipc mode, suppress all stderr output — the ANSI frames are
-	// sent back over stdout as IPC packets, so nothing should go to the terminal.
-	if *previewIpc {
+	// In preview IPC modes, suppress all stderr output because stdout carries
+	// the structured frame/pixel stream.
+	if *previewIpc || *previewPixelsFlag {
 		log.SetOutput(io.Discard)
 	}
 
@@ -129,13 +136,11 @@ func main() {
 
 		// When stdin is a real terminal (not a pipe), skip the IPC read loop
 		// and just wait for Ctrl+C.
-		stat, _ := os.Stdin.Stat()
-		if stat != nil && (stat.Mode()&os.ModeCharDevice) != 0 {
+		if stdinIsTerminal() {
 			log.Println("Demo mode: displaying sample flight card. Press Ctrl+C to exit.")
 			sig := <-sigChan
 			log.Printf("Received signal: %v", sig)
-			matrix.Clear()
-			matrix.Render()
+			clearDisplay(matrix)
 			log.Println("Shutdown complete")
 			return
 		}
@@ -160,7 +165,6 @@ func main() {
 		log.Printf("Received signal: %v", sig)
 	}
 
-	matrix.Clear()
-	matrix.Render()
+	clearDisplay(matrix)
 	log.Println("Shutdown complete")
 }
