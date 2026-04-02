@@ -112,6 +112,7 @@ defmodule AeroVision.MixProject do
        github: "tailwindlabs/heroicons", tag: "v2.1.1", sparse: "optimized", app: false, compile: false, depth: 1},
 
       # Utilities
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:mimic, "~> 2.0", only: :test},
       {:floki, "~> 0.38.0"},
       {:dns_cluster, "~> 0.1"},
