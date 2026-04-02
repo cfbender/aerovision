@@ -142,6 +142,7 @@ defmodule AeroVision.MixProject do
       build: ["assets.deploy", "build.driver", "firmware"],
       "build.driver": ["cmd --cd go_src make build-arm"],
       "build.driver.host": ["cmd --cd go_src make build-host"],
+      "deploy.local": ["assets.deploy", "build.driver", "firmware", "burn"],
       deploy: ["assets.deploy", "build.driver", "firmware", "upload aerovision.local"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind aerovision", "esbuild aerovision"],

@@ -13,14 +13,15 @@ HZELLER_REPO := https://github.com/hzeller/rpi-rgb-led-matrix.git
 # Toolchain detection
 #
 # Prefer the Nerves-bundled aarch64 toolchain (already downloaded by
-# `mix deps.get` for the rpi0_2 target). Fall back to a system-installed
-# arm-linux-gnueabihf toolchain if present.
+# `mix deps.get` for the rpi0_2 target). Searches the artifacts directory
+# for any matching toolchain regardless of host platform (macOS/Linux).
+# Falls back to a system-installed arm-linux-gnueabihf toolchain if present.
 # ---------------------------------------------------------------------------
-NERVES_TOOLCHAIN := $(HOME)/.nerves/artifacts/nerves_toolchain_aarch64_nerves_linux_gnu-darwin_arm-13.2.0/bin
+NERVES_TOOLCHAIN := $(firstword $(wildcard $(HOME)/.nerves/artifacts/nerves_toolchain_aarch64_nerves_linux_gnu-*/bin))
 NERVES_CC  := $(NERVES_TOOLCHAIN)/aarch64-nerves-linux-gnu-gcc
 NERVES_CXX := $(NERVES_TOOLCHAIN)/aarch64-nerves-linux-gnu-g++
 
-ifeq ($(wildcard $(NERVES_CC)),)
+ifeq ($(NERVES_TOOLCHAIN),)
   # Nerves toolchain not found — fall back to system arm-linux-gnueabihf
   ARM_CC  := arm-linux-gnueabihf-gcc
   ARM_CXX := arm-linux-gnueabihf-g++
