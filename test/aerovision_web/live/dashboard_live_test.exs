@@ -131,6 +131,33 @@ defmodule AeroVisionWeb.DashboardLiveTest do
 
   # ── refresh button ──────────────────────────────────────────────────────
 
+  describe "setup wizard API keys step" do
+    test "blank API keys submit advances to location step", %{conn: conn} do
+      Store.reset()
+      Store.put(:wifi_ssid, "TestNetwork")
+      Store.put(:wifi_password, "secret123")
+
+      {:ok, view, _html} = live(conn, "/")
+
+      assert has_element?(view, "form[phx-submit='setup_api_keys']")
+      assert Store.get(:api_keys_seen) == false
+
+      view
+      |> element("form[phx-submit='setup_api_keys']")
+      |> render_submit(%{
+        "api_keys" => %{
+          "opensky_client_id" => "",
+          "opensky_client_secret" => "",
+          "skylink_api_key" => ""
+        }
+      })
+
+      assert Store.get(:api_keys_seen) == true
+      assert has_element?(view, "form[phx-submit='setup_location']")
+      refute has_element?(view, "form[phx-submit='setup_api_keys']")
+    end
+  end
+
   describe "refresh flight button" do
     test "clicking refresh calls FlightStatus.re_enrich with the callsign", %{conn: conn} do
       flight = on_time_flight()

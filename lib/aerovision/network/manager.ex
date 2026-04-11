@@ -9,8 +9,8 @@ defmodule AeroVision.Network.Manager do
   - If no credentials exist, immediately enters AP mode (`"AeroVision-Setup-XXXX"` per device).
   - Monitors connection state; reboots after 60 s of disconnection so VintageNet
     gets a clean driver state and retries the stored credentials on next boot.
-  - AP mode is only entered when no credentials exist or via `force_ap_mode/0`
-    (e.g. long-press of the physical button).
+  - AP mode is entered when no credentials exist, when `wifi_force_ap` is set,
+    or via `force_ap_mode/0` (e.g. long-press of physical button).
   - Responds to external triggers: `force_ap_mode/0`, `connect_wifi/2`.
   - Safe to run on host (development) — VintageNet calls are no-ops when not on target.
   - Publishes `{:network, :ap_mode}` and `{:network, :connected, ip}` via PubSub.
@@ -173,9 +173,10 @@ defmodule AeroVision.Network.Manager do
 
     ssid = Store.get(:wifi_ssid)
     password = Store.get(:wifi_password)
+    force_ap = Store.get(:wifi_force_ap) == true
 
     state =
-      if credentials_present?(ssid, password) do
+      if credentials_present?(ssid, password) and not force_ap do
         Logger.info("[Network.Manager] Credentials found — starting in infrastructure mode")
 
         # Check if VintageNet already connected wlan0 from its boot config.
@@ -196,7 +197,11 @@ defmodule AeroVision.Network.Manager do
 
         %{mode: :infrastructure, reconnect_timer: nil, ssid: ssid}
       else
-        Logger.info("[Network.Manager] No credentials — starting in AP mode")
+        if force_ap do
+          Logger.info("[Network.Manager] wifi_force_ap enabled — starting in AP mode")
+        else
+          Logger.info("[Network.Manager] No credentials — starting in AP mode")
+        end
 
         ap_ssid = setup_ap_ssid()
 
@@ -236,6 +241,7 @@ defmodule AeroVision.Network.Manager do
 
     Store.put(:wifi_ssid, ssid)
     Store.put(:wifi_password, password)
+    Store.put(:wifi_force_ap, false)
 
     state = cancel_reconnect_timer(state)
 
@@ -260,9 +266,20 @@ defmodule AeroVision.Network.Manager do
   def handle_cast(:force_ap_mode, state) do
     Logger.info("[Network.Manager] force_ap_mode triggered")
     state = cancel_reconnect_timer(state)
-    configure_ap(setup_ap_ssid())
-    broadcast_ap_mode()
-    {:noreply, %{state | mode: :ap}}
+    Store.put(:wifi_force_ap, true)
+
+    if on_target?() do
+      # On Pi Zero 2 W, STA/AP runtime switching can leave wlan0 in a bad state.
+      # Persist AP intent and reboot so AP starts cleanly at boot.
+      Logger.info("[Network.Manager] AP force flag saved — rebooting to apply AP mode cleanly")
+      broadcast_ap_mode()
+      Process.send_after(self(), :reboot_for_ap, 1_500)
+      {:noreply, %{state | mode: :ap, ssid: nil}}
+    else
+      configure_ap(setup_ap_ssid())
+      broadcast_ap_mode()
+      {:noreply, %{state | mode: :ap, ssid: nil}}
+    end
   end
 
   # --- Info messages -----------------------------------------------------------
@@ -289,6 +306,18 @@ defmodule AeroVision.Network.Manager do
   def handle_info(:reboot_for_wifi, state) do
     Logger.info("[Network.Manager] Rebooting to apply WiFi config for SSID: #{state.ssid}")
     Nerves.Runtime.reboot()
+    {:noreply, state}
+  end
+
+  # Reboot to cleanly apply forced AP mode (brcmfmac STA→AP workaround)
+  @impl true
+  def handle_info(:reboot_for_ap, state) do
+    Logger.info("[Network.Manager] Rebooting to apply forced AP mode")
+
+    if on_target?() do
+      Nerves.Runtime.reboot()
+    end
+
     {:noreply, state}
   end
 

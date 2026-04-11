@@ -50,6 +50,17 @@ defmodule AeroVision.Network.ManagerTest do
     assert Manager.current_mode() == :infrastructure
   end
 
+  test "with credentials and wifi_force_ap enabled, mode is :ap on init" do
+    stop_supervised!(Manager)
+    Store.put(:wifi_ssid, "MyNetwork")
+    Store.put(:wifi_password, "secret123")
+    Store.put(:wifi_force_ap, true)
+
+    start_supervised!(Manager)
+
+    assert Manager.current_mode() == :ap
+  end
+
   test "with credentials, no :ap_mode broadcast on init" do
     stop_supervised!(Manager)
     Store.put(:wifi_ssid, "MyNetwork")
@@ -129,6 +140,14 @@ defmodule AeroVision.Network.ManagerTest do
     assert Manager.current_mode() == :connecting
   end
 
+  test "connect_wifi/2 clears wifi_force_ap flag" do
+    Store.put(:wifi_force_ap, true)
+
+    Manager.connect_wifi("TestSSID", "password123")
+
+    assert Store.get(:wifi_force_ap) == false
+  end
+
   # ── force_ap_mode/0 ─────────────────────────────────────────────────────────
 
   test "force_ap_mode/0 returns :ok (cast is async, returns :ok immediately)" do
@@ -144,6 +163,15 @@ defmodule AeroVision.Network.ManagerTest do
     Manager.force_ap_mode()
     _ = Manager.current_mode()
     assert Manager.current_mode() == :ap
+  end
+
+  test "force_ap_mode/0 sets wifi_force_ap flag" do
+    Store.put(:wifi_force_ap, false)
+
+    Manager.force_ap_mode()
+    _ = Manager.current_mode()
+
+    assert Store.get(:wifi_force_ap) == true
   end
 
   test "force_ap_mode/0 broadcasts {:network, :ap_mode}" do

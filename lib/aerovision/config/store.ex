@@ -22,6 +22,7 @@ defmodule AeroVision.Config.Store do
   @defaults %{
     wifi_ssid: nil,
     wifi_password: nil,
+    wifi_force_ap: false,
     location_lat: 35.7721,
     location_lon: -78.63861,
     radius_km: 40.234,

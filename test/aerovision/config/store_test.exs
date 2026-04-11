@@ -50,6 +50,7 @@ defmodule AeroVision.Config.StoreTest do
     assert get(store, :display_brightness) == 80
     assert get(store, :display_cycle_seconds) == 15
     assert get(store, :units) == :imperial
+    assert get(store, :wifi_force_ap) == false
   end
 
   test "get/1 returns nil for unset optional keys", %{store: store} do

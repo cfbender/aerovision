@@ -814,13 +814,17 @@ defmodule AeroVisionWeb.DashboardLive do
     if @on_target do
       cond do
         is_nil(config.wifi_ssid) or config.wifi_ssid == "" -> :wifi
-        not has_any_api_keys?(config) -> :api_keys
+        not api_keys_step_complete?(config) -> :api_keys
         config.location_lat == 35.7721 and config.location_lon == -78.63861 -> :location
         true -> :done
       end
     else
       :done
     end
+  end
+
+  defp api_keys_step_complete?(config) do
+    config.api_keys_seen == true or has_any_api_keys?(config)
   end
 
   defp has_any_api_keys?(config) do
