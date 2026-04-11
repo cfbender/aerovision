@@ -18,6 +18,7 @@ defmodule AeroVisionWeb.SetupLive do
        page_title: "WiFi Setup",
        network_mode: network_mode,
        ip: ip,
+       ap_ssid: Manager.setup_ap_ssid(),
        ssid: "",
        password: "",
        scan_results: [],
@@ -48,7 +49,8 @@ defmodule AeroVisionWeb.SetupLive do
     {:noreply,
      assign(socket,
        network_mode: :ap,
-       ip: "192.168.24.1",
+       ip: Manager.setup_ap_ip(),
+       ap_ssid: Manager.setup_ap_ssid(),
        connecting: false,
        connect_status: {:error, "Failed to connect — returned to setup mode."}
      )}
@@ -167,7 +169,7 @@ defmodule AeroVisionWeb.SetupLive do
                 <% :infrastructure -> %>
                   Connected to WiFi
                 <% :ap -> %>
-                  Access Point Mode — connect to "AeroVision-Setup"
+                  Access Point Mode — connect to "{@ap_ssid}"
                 <% _ -> %>
                   Checking network status…
               <% end %>

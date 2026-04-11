@@ -81,6 +81,30 @@ defmodule AeroVision.Network.ManagerTest do
     assert ip == "127.0.0.1"
   end
 
+  test "setup_ap_ssid/0 uses AeroVision-Setup prefix" do
+    assert String.starts_with?(Manager.setup_ap_ssid(), "AeroVision-Setup")
+  end
+
+  test "setup_ap_ssid/0 prefers configured runtime value" do
+    previous = Application.get_env(:aerovision, :setup_ap_ssid)
+
+    on_exit(fn ->
+      if is_binary(previous) do
+        Application.put_env(:aerovision, :setup_ap_ssid, previous)
+      else
+        Application.delete_env(:aerovision, :setup_ap_ssid)
+      end
+    end)
+
+    Application.put_env(:aerovision, :setup_ap_ssid, "AeroVision-Setup-ABCD")
+
+    assert Manager.setup_ap_ssid() == "AeroVision-Setup-ABCD"
+  end
+
+  test "setup_ap_ip/0 returns setup AP gateway" do
+    assert Manager.setup_ap_ip() == "192.168.24.1"
+  end
+
   # ── connect_wifi/2 ──────────────────────────────────────────────────────────
 
   test "connect_wifi/2 saves ssid to Config.Store" do
@@ -190,14 +214,25 @@ defmodule AeroVision.Network.ManagerTest do
 
   # ── VintageNet-format messages ───────────────────────────────────────────────
 
-  test ":internet connection event switches mode to :infrastructure" do
-    # Start in AP mode
+  test ":internet connection event switches mode to :infrastructure from :connecting" do
+    assert Manager.current_mode() == :ap
+
+    Manager.connect_wifi("TestSSID", "pass")
+    assert Manager.current_mode() == :connecting
+
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
+
+    assert Manager.current_mode() == :infrastructure
+  end
+
+  test ":internet connection event while in :ap mode is ignored" do
     assert Manager.current_mode() == :ap
 
     pid = GenServer.whereis(Manager)
     send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
-    # Sync with a call
-    assert Manager.current_mode() == :infrastructure
+
+    assert Manager.current_mode() == :ap
   end
 
   test ":internet connection event broadcasts {:network, :connected, ip}" do
@@ -226,15 +261,29 @@ defmodule AeroVision.Network.ManagerTest do
     assert is_binary(ip)
   end
 
-  test ":lan connection event also switches mode to :infrastructure" do
+  test ":lan connection event also switches mode to :infrastructure from :connecting" do
+    Manager.connect_wifi("TestSSID", "pass")
+    assert Manager.current_mode() == :connecting
+
     pid = GenServer.whereis(Manager)
     send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :lan, %{}})
     assert Manager.current_mode() == :infrastructure
   end
 
+  test ":lan connection event while in :ap mode is ignored" do
+    assert Manager.current_mode() == :ap
+
+    pid = GenServer.whereis(Manager)
+    send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :lan, %{}})
+    assert Manager.current_mode() == :ap
+  end
+
   @tag :capture_log
   test ":disconnected from :infrastructure sets :disconnected mode" do
-    # First move to infrastructure
+    # First move to infrastructure from :connecting
+    Manager.connect_wifi("TestSSID", "pass")
+    assert Manager.current_mode() == :connecting
+
     pid = GenServer.whereis(Manager)
     send(pid, {VintageNet, ["interface", "wlan0", "connection"], nil, :internet, %{}})
     assert Manager.current_mode() == :infrastructure

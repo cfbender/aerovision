@@ -27,8 +27,6 @@ defmodule AeroVision.Display.Renderer do
   @pubsub AeroVision.PubSub
   @default_cycle_seconds 8
   @qr_duration_ms 10_000
-  @ap_ssid "AeroVision-Setup"
-  @ap_ip "192.168.24.1"
 
   # Modes that mean "not connected to WiFi yet" — QR is suppressed in these.
   @no_wifi_modes [:ap, :connecting, :loading, :disconnected]
@@ -275,7 +273,9 @@ defmodule AeroVision.Display.Renderer do
 
   defp build_command(%{mode: :loading}), do: %{cmd: "scan_anim"}
 
-  defp build_command(%{mode: :ap}), do: %{cmd: "ap_screen", ssid: @ap_ssid, ip: @ap_ip}
+  defp build_command(%{mode: :ap}) do
+    %{cmd: "ap_screen", ssid: NetworkManager.setup_ap_ssid(), ip: NetworkManager.setup_ap_ip()}
+  end
 
   defp build_command(%{mode: :connecting, connecting_ssid: ssid}), do: %{cmd: "connecting_screen", ssid: ssid || "WiFi"}
 

@@ -6,7 +6,7 @@ defmodule AeroVision.Network.Manager do
 
   - On boot, reads WiFi credentials from `AeroVision.Config.Store`.
   - If credentials exist, configures VintageNet for infrastructure (client) mode.
-  - If no credentials exist, immediately enters AP mode (`"AeroVision-Setup"`).
+  - If no credentials exist, immediately enters AP mode (`"AeroVision-Setup-XXXX"` per device).
   - Monitors connection state; reboots after 60 s of disconnection so VintageNet
     gets a clean driver state and retries the stored credentials on next boot.
   - AP mode is only entered when no credentials exist or via `force_ap_mode/0`
@@ -26,8 +26,11 @@ defmodule AeroVision.Network.Manager do
   @topic "network"
 
   @interface "wlan0"
-  @ap_ssid "AeroVision-Setup"
+  @ap_ssid_base "AeroVision-Setup"
   @ap_ip "192.168.24.1"
+  @ap_dhcp_start "192.168.24.2"
+  @ap_dhcp_end "192.168.24.200"
+  @ap_max_leases 128
   @reconnect_timeout_ms 60_000
 
   # ---------------------------------------------------------------------------
@@ -61,6 +64,14 @@ defmodule AeroVision.Network.Manager do
   def force_ap_mode do
     GenServer.cast(__MODULE__, :force_ap_mode)
   end
+
+  @doc "Return setup AP SSID from runtime config (fallback: wlan0 MAC suffix)."
+  def setup_ap_ssid do
+    configured_setup_ap_ssid() || derive_ap_ssid(wlan_mac_address())
+  end
+
+  @doc "Return setup AP IPv4 address."
+  def setup_ap_ip, do: @ap_ip
 
   @doc """
   Trigger a WiFi scan and wait for results. Returns a list of maps with
@@ -186,7 +197,20 @@ defmodule AeroVision.Network.Manager do
         %{mode: :infrastructure, reconnect_timer: nil, ssid: ssid}
       else
         Logger.info("[Network.Manager] No credentials — starting in AP mode")
-        configure_ap()
+
+        ap_ssid = setup_ap_ssid()
+
+        # If wlan0 already booted in AP mode from VintageNet's compile-time
+        # config and SSID already matches expected per-device value, avoid
+        # runtime reconfiguration churn and keep the AP stable.
+        if ap_mode_active?(ap_ssid) do
+          Logger.info(
+            "[Network.Manager] AP already active from boot config with SSID #{ap_ssid} — skipping reconfiguration"
+          )
+        else
+          configure_ap(ap_ssid)
+        end
+
         broadcast_ap_mode()
         %{mode: :ap, reconnect_timer: nil, ssid: nil}
       end
@@ -236,7 +260,7 @@ defmodule AeroVision.Network.Manager do
   def handle_cast(:force_ap_mode, state) do
     Logger.info("[Network.Manager] force_ap_mode triggered")
     state = cancel_reconnect_timer(state)
-    configure_ap()
+    configure_ap(setup_ap_ssid())
     broadcast_ap_mode()
     {:noreply, %{state | mode: :ap}}
   end
@@ -305,11 +329,14 @@ defmodule AeroVision.Network.Manager do
   # Used to distinguish AP mode (which also reports :lan) from infrastructure
   # mode so we don't skip reconfiguration when AP mode was persisted on boot.
   # Must only be called on target (where vintage_net_get returns real data).
-  defp ap_mode_active? do
+  defp ap_mode_active?(expected_ssid \\ nil) do
     if on_target?() do
       case vintage_net_get(["interface", @interface, "config"]) do
-        %{vintage_net_wifi: %{networks: [%{mode: :ap} | _]}} -> true
-        _ -> false
+        %{vintage_net_wifi: %{networks: [%{mode: :ap} = network | _]}} ->
+          ap_ssid_matches?(network, expected_ssid)
+
+        _ ->
+          false
       end
     else
       false
@@ -330,27 +357,23 @@ defmodule AeroVision.Network.Manager do
     })
   end
 
-  defp configure_ap do
-    Logger.info("[Network.Manager] Configuring AP mode (SSID: #{@ap_ssid})")
+  defp configure_ap(ssid) do
+    Logger.info("[Network.Manager] Configuring AP mode (SSID: #{ssid})")
 
     vintage_net_configure(@interface, %{
       type: VintageNetWiFi,
       vintage_net_wifi: %{
-        networks: [%{mode: :ap, ssid: @ap_ssid, key_mgmt: :none}]
+        networks: [%{mode: :ap, ssid: ssid, key_mgmt: :none}]
       },
       ipv4: %{
         method: :static,
-        address: @ap_ip,
+        address: setup_ap_ip(),
         netmask: "255.255.255.0"
       },
       dhcpd: %{
-        start: "192.168.24.2",
-        end: "192.168.24.10",
-        options: %{
-          dns: [@ap_ip],
-          subnet: "255.255.255.0",
-          router: [@ap_ip]
-        }
+        start: @ap_dhcp_start,
+        end: @ap_dhcp_end,
+        max_leases: @ap_max_leases
       }
     })
   end
@@ -358,31 +381,36 @@ defmodule AeroVision.Network.Manager do
   # --- Connection change handling ---------------------------------------------
 
   defp handle_connection_change(:internet, state) do
-    Logger.info("[Network.Manager] Connected to internet")
-    state = cancel_reconnect_timer(state)
+    case state.mode do
+      :ap ->
+        # AP mode may report :internet/:lan for local interface activity.
+        # Stay in AP mode and ignore these as infrastructure transitions.
+        Logger.debug("[Network.Manager] :internet event while in AP mode — ignoring")
+        state
 
-    # Only broadcast :connected when transitioning from an infrastructure/connecting
-    # mode — not when we're in AP mode (where VintageNet also reports :internet/:lan
-    # because the DHCP server is running on the AP interface).
-    if state.mode in [:infrastructure, :connecting, :disconnected] do
-      ip = fetch_ip()
-      broadcast_connected(ip)
+      _ ->
+        Logger.info("[Network.Manager] Connected to internet")
+        state = cancel_reconnect_timer(state)
+        ip = fetch_ip()
+        broadcast_connected(ip)
+        %{state | mode: :infrastructure}
     end
-
-    %{state | mode: :infrastructure}
   end
 
   defp handle_connection_change(:lan, state) do
-    Logger.info("[Network.Manager] Connected to LAN (no internet)")
-    state = cancel_reconnect_timer(state)
+    case state.mode do
+      :ap ->
+        # AP mode's own LAN state is expected. Don't mutate mode.
+        Logger.debug("[Network.Manager] :lan event while in AP mode — ignoring")
+        state
 
-    # Guard: don't broadcast :connected for AP mode's own LAN connection.
-    if state.mode in [:infrastructure, :connecting, :disconnected] do
-      ip = fetch_ip()
-      broadcast_connected(ip)
+      _ ->
+        Logger.info("[Network.Manager] Connected to LAN (no internet)")
+        state = cancel_reconnect_timer(state)
+        ip = fetch_ip()
+        broadcast_connected(ip)
+        %{state | mode: :infrastructure}
     end
-
-    %{state | mode: :infrastructure}
   end
 
   defp handle_connection_change(:disconnected, %{mode: :infrastructure} = state) do
@@ -410,6 +438,58 @@ defmodule AeroVision.Network.Manager do
   defp cancel_reconnect_timer(%{reconnect_timer: timer} = state) do
     Process.cancel_timer(timer)
     %{state | reconnect_timer: nil}
+  end
+
+  defp configured_setup_ap_ssid do
+    case Application.get_env(:aerovision, :setup_ap_ssid) do
+      ssid when is_binary(ssid) and ssid != "" -> ssid
+      _ -> nil
+    end
+  end
+
+  defp derive_ap_ssid(nil), do: @ap_ssid_base
+
+  defp derive_ap_ssid(mac_address) do
+    case mac_suffix(mac_address) do
+      nil -> @ap_ssid_base
+      suffix -> "#{@ap_ssid_base}-#{suffix}"
+    end
+  end
+
+  defp wlan_mac_address do
+    path = Path.join(["/sys/class/net", @interface, "address"])
+
+    case File.read(path) do
+      {:ok, mac} ->
+        String.trim(mac)
+
+      {:error, _reason} ->
+        case vintage_net_get(["interface", @interface, "mac_address"]) do
+          mac when is_binary(mac) -> String.trim(mac)
+          _ -> nil
+        end
+    end
+  end
+
+  defp mac_suffix(mac_address) when is_binary(mac_address) do
+    cleaned =
+      mac_address
+      |> String.trim()
+      |> String.replace(":", "")
+      |> String.replace("-", "")
+      |> String.upcase()
+
+    if String.match?(cleaned, ~r/\A[0-9A-F]{12}\z/) do
+      String.slice(cleaned, byte_size(cleaned) - 4, 4)
+    end
+  end
+
+  defp mac_suffix(_), do: nil
+
+  defp ap_ssid_matches?(_network, nil), do: true
+
+  defp ap_ssid_matches?(network, expected_ssid) do
+    Map.get(network, :ssid) == expected_ssid
   end
 
   # --- IP address helper -------------------------------------------------------

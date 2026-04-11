@@ -21,6 +21,13 @@ import Config
       {nil, nil}
   end
 
+# Base setup SSID; runtime.exs applies per-device MAC suffix at boot.
+ap_ssid_base = "AeroVision-Setup"
+ap_ip = "192.168.24.1"
+ap_dhcp_start = "192.168.24.2"
+ap_dhcp_end = "192.168.24.200"
+ap_max_leases = 128
+
 wlan0_boot_config =
   if is_binary(wlan0_boot_ssid) and wlan0_boot_ssid != "" and
        is_binary(wlan0_boot_pass) and wlan0_boot_pass != "" do
@@ -32,7 +39,22 @@ wlan0_boot_config =
       ipv4: %{method: :dhcp}
     }
   else
-    %{type: VintageNetWiFi}
+    %{
+      type: VintageNetWiFi,
+      vintage_net_wifi: %{
+        networks: [%{mode: :ap, ssid: ap_ssid_base, key_mgmt: :none}]
+      },
+      ipv4: %{
+        method: :static,
+        address: ap_ip,
+        netmask: "255.255.255.0"
+      },
+      dhcpd: %{
+        start: ap_dhcp_start,
+        end: ap_dhcp_end,
+        max_leases: ap_max_leases
+      }
+    }
   end
 
 # SSH access for debugging — reads your local public key at build time.
@@ -94,7 +116,7 @@ config :shoehorn,
 
 # VintageNet boot config — wlan0 includes baked-in credentials when available
 # so the brcmfmac driver can connect to WiFi immediately without a runtime
-# reconfiguration step. Falls back to scan-only mode if no credentials found.
+# reconfiguration step. Falls back to AP setup mode if no credentials found.
 config :vintage_net,
   regulatory_domain: "US",
   config: [
