@@ -247,17 +247,24 @@ defmodule AeroVision.Flight.Providers.Skylink.ADSB do
     if state.poll_timer, do: Process.cancel_timer(state.poll_timer)
 
     if should_poll?(state) do
-      interval = poll_interval_ms(state.mode)
-      timer = Process.send_after(self(), :poll, interval)
+      timer = Process.send_after(self(), :poll, poll_interval_ms(state.mode))
       %{state | poll_timer: timer}
     else
       %{state | poll_timer: nil}
     end
   end
 
-  # 5 minutes for tracked mode, 30 seconds for nearby fallback
-  defp poll_interval_ms(:tracked), do: 5 * 60 * 1_000
-  defp poll_interval_ms(_nearby), do: 30_000
+  # 5 minutes for tracked mode, 30 seconds for nearby fallback.
+  # While the system clock is unsynced (before NTP completes after boot),
+  # do_fetch/1 defers, so retry quickly instead of waiting a full interval —
+  # critical in tracked mode where the interval is 5 minutes.
+  defp poll_interval_ms(mode) do
+    cond do
+      not TimeSync.synchronized?() -> 2_000
+      mode == :tracked -> 5 * 60 * 1_000
+      true -> 30_000
+    end
+  end
 
   defp cancel_poll_timer(state) do
     if state.poll_timer, do: Process.cancel_timer(state.poll_timer)

@@ -35,6 +35,9 @@ defmodule AeroVision.Flight.Providers.OpenSky do
   @pubsub AeroVision.PubSub
   @topic "flights"
   @poll_interval_ms 30_000
+  # While the system clock is unsynced (before NTP completes after boot),
+  # do_fetch/1 defers, so retry quickly instead of waiting a full interval.
+  @clock_sync_retry_ms 2_000
   @token_refresh_buffer_sec 300
 
   # ─────────────────────────────────────────────────────────── public API ──
@@ -279,7 +282,10 @@ defmodule AeroVision.Flight.Providers.OpenSky do
     if state.poll_timer, do: Process.cancel_timer(state.poll_timer)
 
     if should_poll?(state) do
-      timer = Process.send_after(self(), :poll, @poll_interval_ms)
+      interval =
+        if TimeSync.synchronized?(), do: @poll_interval_ms, else: @clock_sync_retry_ms
+
+      timer = Process.send_after(self(), :poll, interval)
       %{state | poll_timer: timer}
     else
       %{state | poll_timer: nil}
