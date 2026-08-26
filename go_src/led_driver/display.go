@@ -14,7 +14,14 @@ type Display struct {
 	width    int
 	height   int
 	animStop chan struct{} // non-nil when an animation goroutine is running
+	animDone chan struct{} // closed by the animation goroutine when it has fully exited
+	animKind string        // which animation is running ("scan", "ap_scroll")
 	animMu   sync.Mutex
+	// frameMu serialises every Clear→draw→Render frame on the matrix.
+	// Animation goroutines and the command handler both render frames;
+	// without this, concurrent led_matrix_swap_on_vsync calls corrupt the
+	// offscreen canvas pointer and can wedge the hzeller refresh thread.
+	frameMu sync.Mutex
 }
 
 const (
@@ -44,17 +51,44 @@ func NewDisplay(matrix Matrix, width, height int) *Display {
 	}
 }
 
-// stopAnim cancels any running animation goroutine and waits for it to exit.
+// stopAnim cancels any running animation goroutine and joins it — it does
+// not return until the goroutine has fully exited. This guarantees the next
+// command's frame cannot race (and be clobbered by) a straggler animation frame.
 func (d *Display) stopAnim() {
 	d.animMu.Lock()
-	ch := d.animStop
+	stop := d.animStop
+	done := d.animDone
 	d.animStop = nil
+	d.animDone = nil
+	d.animKind = ""
 	d.animMu.Unlock()
-	if ch != nil {
-		close(ch)
-		// Give the goroutine a moment to exit cleanly
-		time.Sleep(20 * time.Millisecond)
+	if stop != nil {
+		close(stop)
+		<-done
 	}
+}
+
+// startAnim registers and launches an animation goroutine. run receives the
+// stop channel; it must return promptly once the channel is closed.
+func (d *Display) startAnim(kind string, run func(stop chan struct{})) {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	d.animMu.Lock()
+	d.animStop = stop
+	d.animDone = done
+	d.animKind = kind
+	d.animMu.Unlock()
+	go func() {
+		defer close(done)
+		run(stop)
+	}()
+}
+
+// animRunning reports whether an animation of the given kind is active.
+func (d *Display) animRunning(kind string) bool {
+	d.animMu.Lock()
+	defer d.animMu.Unlock()
+	return d.animStop != nil && d.animKind == kind
 }
 
 // HandleCommand dispatches an inbound Command to the appropriate renderer.
@@ -102,6 +136,8 @@ func (d *Display) HandleCommand(cmd Command) {
 
 // renderFlightCard renders the full 64×64 TheFlightWall-style flight card.
 func (d *Display) renderFlightCard(cmd Command) {
+	d.frameMu.Lock()
+	defer d.frameMu.Unlock()
 	d.matrix.Clear()
 
 	// ══════════════════════════════════════════════════════════════════════
@@ -207,12 +243,23 @@ func (d *Display) renderFlightCard(cmd Command) {
 
 // renderClear fills the entire display with black.
 func (d *Display) renderClear() {
+	d.frameMu.Lock()
+	defer d.frameMu.Unlock()
 	d.matrix.Clear()
 	d.matrix.Render()
 }
 
+// Shutdown stops any running animation and blanks the display. Called on
+// process exit so no goroutine races the final clear.
+func (d *Display) Shutdown() {
+	d.stopAnim()
+	d.renderClear()
+}
+
 // renderText draws arbitrary text for debugging purposes.
 func (d *Display) renderText(cmd Command) {
+	d.frameMu.Lock()
+	defer d.frameMu.Unlock()
 	r := uint8(cmd.Color[0])
 	g := uint8(cmd.Color[1])
 	b := uint8(cmd.Color[2])
@@ -334,6 +381,8 @@ func randomPass() animPass {
 // renderConnectingScreen shows a "Connecting to <SSID>" message while
 // VintageNet is associating with a new WiFi network.
 func (d *Display) renderConnectingScreen(cmd Command) {
+	d.frameMu.Lock()
+	defer d.frameMu.Unlock()
 	d.matrix.Clear()
 
 	cyan := [3]uint8{0, 200, 220}
@@ -372,6 +421,8 @@ func (d *Display) renderConnectingScreen(cmd Command) {
 
 // renderWifiError shows a static "WiFi disconnected" error screen.
 func (d *Display) renderWifiError() {
+	d.frameMu.Lock()
+	defer d.frameMu.Unlock()
 	d.matrix.Clear()
 
 	red := [3]uint8{255, 60, 60}
@@ -450,19 +501,16 @@ func (d *Display) renderWifiError() {
 // If the animation is already running this is a no-op — the existing
 // goroutine continues uninterrupted, avoiding a disruptive restart.
 func (d *Display) renderScanAnim() {
-	d.animMu.Lock()
-	already := d.animStop != nil
-	d.animMu.Unlock()
-	if already {
+	// Already running — leave the existing goroutine untouched.
+	if d.animRunning("scan") {
 		return
 	}
 
-	stop := make(chan struct{})
-	d.animMu.Lock()
-	d.animStop = stop
-	d.animMu.Unlock()
+	// A different animation (e.g. the AP-screen URL scroller) may be active;
+	// stop it so the scan animation actually takes over the display.
+	d.stopAnim()
 
-	go func() {
+	d.startAnim("scan", func(stop chan struct{}) {
 		const (
 			steps   = 80 // frames per pass
 			frameMs = 40 // ~25 fps
@@ -479,10 +527,21 @@ func (d *Display) renderScanAnim() {
 			case <-stop:
 				return
 			case <-ticker.C:
+				// Priority check: if stop was closed while we waited on the
+				// ticker, exit instead of drawing another frame. Go's select
+				// picks randomly among ready cases, so without this a frame
+				// could still be drawn after stopAnim was requested.
+				select {
+				case <-stop:
+					return
+				default:
+				}
+
 				t := float64(step) / float64(steps)
 				x := int(float64(pass.startX) + t*float64(pass.endX-pass.startX))
 				y := int(float64(pass.startY) + t*float64(pass.endY-pass.startY))
 
+				d.frameMu.Lock()
 				d.matrix.Clear()
 
 				// Subtle trail — 3 ghost dots behind the sprite centre
@@ -506,6 +565,7 @@ func (d *Display) renderScanAnim() {
 
 				drawPlaneSprite(d.matrix, x, y, pass.dir)
 				d.matrix.Render()
+				d.frameMu.Unlock()
 
 				step++
 				if step > steps {
@@ -514,7 +574,7 @@ func (d *Display) renderScanAnim() {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // renderAPScreen displays the WiFi setup screen when in AP mode.
@@ -537,7 +597,11 @@ func (d *Display) renderAPScreen(cmd Command) {
 	url := "http://" + ip
 
 	// drawStatic renders everything except the scrolling URL row.
+	// Called from both this function and the scroll goroutine, so it takes
+	// frameMu to serialise against any other frame producer.
 	drawStatic := func(scrollX int) {
+		d.frameMu.Lock()
+		defer d.frameMu.Unlock()
 		d.matrix.Clear()
 
 		// Header
@@ -579,14 +643,8 @@ func (d *Display) renderAPScreen(cmd Command) {
 	}
 
 	// URL is too wide — scroll it. The animation goroutine handles this.
-	d.stopAnim()
-
-	stop := make(chan struct{})
-	d.animMu.Lock()
-	d.animStop = stop
-	d.animMu.Unlock()
-
-	go func() {
+	// (HandleCommand already stopped any previous animation.)
+	d.startAnim("ap_scroll", func(stop chan struct{}) {
 		// Scroll: starts fully off the right edge, moves left until fully off left.
 		// Then pauses briefly and loops.
 		const (
@@ -606,10 +664,15 @@ func (d *Display) renderAPScreen(cmd Command) {
 		for {
 			select {
 			case <-stop:
-				d.matrix.Clear()
-				d.matrix.Render()
 				return
 			case <-ticker.C:
+				// Priority check — see renderScanAnim.
+				select {
+				case <-stop:
+					return
+				default:
+				}
+
 				if pausing {
 					drawStatic(startX)
 					pauseFrames--
@@ -629,7 +692,7 @@ func (d *Display) renderAPScreen(cmd Command) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────

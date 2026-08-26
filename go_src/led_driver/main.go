@@ -17,11 +17,6 @@ func stdinIsTerminal() bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-func clearDisplay(matrix Matrix) {
-	matrix.Clear()
-	matrix.Render()
-}
-
 func main() {
 	// Log to stderr (stdout is reserved for IPC protocol)
 	log.SetOutput(os.Stderr)
@@ -140,7 +135,7 @@ func main() {
 			log.Println("Demo mode: displaying sample flight card. Press Ctrl+C to exit.")
 			sig := <-sigChan
 			log.Printf("Received signal: %v", sig)
-			clearDisplay(matrix)
+			display.Shutdown()
 			log.Println("Shutdown complete")
 			return
 		}
@@ -165,6 +160,6 @@ func main() {
 		log.Printf("Received signal: %v", sig)
 	}
 
-	clearDisplay(matrix)
+	display.Shutdown()
 	log.Println("Shutdown complete")
 }

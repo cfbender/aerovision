@@ -10,6 +10,8 @@ import (
 // the display. Uses white modules on a black background.
 // Scale is chosen automatically: 2px/module if it fits, 1px/module otherwise.
 func (d *Display) renderQRCode(cmd Command) {
+	d.frameMu.Lock()
+	defer d.frameMu.Unlock()
 	d.matrix.Clear()
 
 	if cmd.Data == "" {

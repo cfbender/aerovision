@@ -225,7 +225,26 @@ defmodule AeroVision.Display.Renderer do
     next_index = rem(state.current_index + 1, length(state.flights))
     state = %{state | current_index: next_index, cycle_timer: nil}
     state = ensure_cycle_timer(state)
-    state = render(state)
+    # Bypass command dedup on cycle ticks: with a single flight the rebuilt
+    # command is identical, but re-sending it every cycle self-heals the panel
+    # after a Go driver crash/restart or a dropped frame. One small JSON
+    # packet every few seconds is negligible.
+    state = render(%{state | last_command: nil})
+    {:noreply, state}
+  end
+
+  # --- Driver (Go binary) restarted --------------------------------------------
+
+  @impl true
+  def handle_info(:driver_restarted, state) do
+    Logger.info("[Display.Renderer] Driver restarted — re-applying brightness and re-rendering")
+
+    if brightness = Store.get(:display_brightness) do
+      Driver.send_command(%{cmd: "brightness", value: brightness})
+    end
+
+    # Clear the dedup cache so the current screen is actually re-sent.
+    state = render(%{state | last_command: nil})
     {:noreply, state}
   end
 

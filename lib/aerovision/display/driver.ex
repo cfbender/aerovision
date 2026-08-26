@@ -187,6 +187,12 @@ defmodule AeroVision.Display.Driver do
 
       try do
         port = open_port(path)
+
+        # The fresh Go process starts with a blank panel and default brightness.
+        # Tell the Renderer so it can re-apply brightness and re-send the
+        # current screen (its dedup cache would otherwise suppress it).
+        Phoenix.PubSub.broadcast(AeroVision.PubSub, "display", :driver_restarted)
+
         {:noreply, %{state | port: port, alive: true}}
       rescue
         e ->

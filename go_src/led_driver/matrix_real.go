@@ -42,6 +42,7 @@ struct RGBLedMatrix* new_matrix(int rows, int cols, int chain, int parallel,
 import "C"
 import (
 	"fmt"
+	"sync"
 	"unsafe"
 )
 
@@ -60,6 +61,10 @@ type RealMatrix struct {
 	offscreen *C.struct_LedCanvas // draw target; swapped on Render()
 	width     int
 	height    int
+	// mu guards offscreen. Display.frameMu already serialises whole frames,
+	// but this is defence in depth: a concurrent swap_on_vsync would corrupt
+	// the offscreen pointer and can wedge the hzeller refresh thread forever.
+	mu sync.Mutex
 }
 
 func NewMatrix(config *MatrixConfig) (Matrix, error) {
@@ -109,8 +114,10 @@ func NewMatrix(config *MatrixConfig) (Matrix, error) {
 // SetPixel draws to the offscreen canvas — not visible until Render().
 func (m *RealMatrix) SetPixel(x, y int, r, g, b uint8) {
 	if x >= 0 && x < m.width && y >= 0 && y < m.height {
+		m.mu.Lock()
 		C.led_canvas_set_pixel(m.offscreen, C.int(x), C.int(y),
 			C.uint8_t(r), C.uint8_t(g), C.uint8_t(b))
+		m.mu.Unlock()
 	}
 }
 
@@ -120,14 +127,18 @@ func (m *RealMatrix) SetBrightness(brightness int) {
 
 // Clear wipes the offscreen canvas — not visible until Render().
 func (m *RealMatrix) Clear() {
+	m.mu.Lock()
 	C.led_canvas_clear(m.offscreen)
+	m.mu.Unlock()
 }
 
 // Render atomically swaps the offscreen canvas onto the display.
 // The old display canvas becomes the new offscreen canvas, ready for
 // the next frame. No black frame is ever shown.
 func (m *RealMatrix) Render() {
+	m.mu.Lock()
 	m.offscreen = C.led_matrix_swap_on_vsync(m.matrix, m.offscreen)
+	m.mu.Unlock()
 }
 
 func (m *RealMatrix) Close() {

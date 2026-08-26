@@ -152,8 +152,11 @@ defmodule AeroVision.Flight.Providers.Skylink.ADSB do
         state
       end
     else
+      # Do NOT call schedule_poll here — every caller of do_fetch/1 already
+      # schedules the next poll. Scheduling here too leaked an untracked timer
+      # per deferred poll (duplicate :poll messages → burst of API calls after
+      # clock sync).
       Logger.debug("[Skylink.ADSB] Clock not synced — deferring poll")
-      schedule_poll(state)
       state
     end
   end
