@@ -157,7 +157,7 @@ You can run AeroVision on your development machine to iterate on the web UI and 
 ### Prerequisites
 
 - **Elixir 1.19.5-otp-28** and **Erlang/OTP 28.3.1**
-- **Go 1.26.0**
+- **Go 1.26.10**
 - **Git**
 
 The repo includes a `mise.toml` with pinned versions. If you use [mise](https://mise.jdx.dev/), run `mise install` in the project root to get the correct toolchain automatically. Otherwise install manually via [asdf](https://github.com/asdf-vm/asdf), [Homebrew](https://brew.sh), or [golang.org/dl](https://golang.org/dl/).

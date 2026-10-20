@@ -15,7 +15,7 @@ Flight tracking LED display for Raspberry Pi Zero 2 W with a 64×64 HUB75 LED pa
 
 ### Prerequisites
 - Elixir 1.19.5-otp-28, Erlang/OTP 28.3.1
-- Go 1.26.0
+- Go 1.26.10
 - Node.js (managed by esbuild/tailwind via mix assets)
 
 A `mise.toml` in the project root pins these versions. Run `mise install` to install them automatically.
