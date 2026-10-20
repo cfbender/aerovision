@@ -1,5 +1,5 @@
 module github.com/aerovision/led_driver
 
-go 1.25.0
+go 1.26.10
 
 require github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
